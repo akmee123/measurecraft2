@@ -971,7 +971,8 @@
       '<td class="mono">' + esc((p.uploadedAt || '').replace('T', ' ').slice(0, 19)) + '</td>' +
       '<td>' + esc(p.scaleNote || '—') + '</td>' +
       '<td>' + (p.drawingId
-        ? '<a href="/api/research/drawing/' + encodeURIComponent(p.drawingId) + '" style="color:var(--teal)">Original</a>'
+        ? '<button type="button" class="secondary dl-drawing" data-id="' + esc(p.drawingId) + '" data-kind="original" style="padding:4px 10px;font-size:12px;">Original</button>'
+          + (p.hasMarked ? ' <button type="button" class="secondary dl-drawing" data-id="' + esc(p.drawingId) + '" data-kind="marked" style="padding:4px 10px;font-size:12px;">Marked</button>' : '')
         : '—') + '</td>' +
       '</tr>').join('') : '<tr><td colspan="9" class="empty">No projects registered yet</td></tr>';
     $('projCount').textContent = rows.length + ' project row(s) · drawings stay unique (DWG-####)';
@@ -983,7 +984,8 @@
       '<td class="mono">' + esc(d.participantId || '—') + '</td>' +
       '<td class="mono">' + esc((d.uploadedAt || '').replace('T', ' ').slice(0, 19) || '—') + '</td>' +
       '<td>' + (d.drawingId
-        ? '<a href="/api/research/drawing/' + encodeURIComponent(d.drawingId) + '" style="color:var(--teal)">Download</a>'
+        ? '<button type="button" class="secondary dl-drawing" data-id="' + esc(d.drawingId) + '" data-kind="original" style="padding:4px 10px;font-size:12px;">Original</button>'
+          + ' <button type="button" class="secondary dl-drawing" data-id="' + esc(d.drawingId) + '" data-kind="marked" style="padding:4px 10px;font-size:12px;">Marked</button>'
         : '—') + '</td></tr>').join('') : '<tr><td colspan="5" class="empty">No stored drawings</td></tr>';
   }
 
@@ -1218,6 +1220,48 @@
       $('gtMsg').textContent = err.message;
       $('gtMsg').className = 'bad';
     }
+  });
+
+  async function downloadDrawing(drawingId, kind) {
+    if (!drawingId) return;
+    if (!token) {
+      toast('Unlock the dashboard with the research token first');
+      return;
+    }
+    const path = kind === 'marked'
+      ? '/api/research/drawing/' + encodeURIComponent(drawingId) + '/marked'
+      : '/api/research/drawing/' + encodeURIComponent(drawingId);
+    try {
+      const res = await fetch(path, { headers: headers() });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || ('Download failed (HTTP ' + res.status + ')'));
+      }
+      const blob = await res.blob();
+      let name = drawingId + (kind === 'marked' ? '_marked' : '');
+      const cd = res.headers.get('Content-Disposition') || '';
+      const m = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(cd);
+      if (m) name = decodeURIComponent(m[1].replace(/"/g, '').trim());
+      else {
+        const ct = (res.headers.get('Content-Type') || '').toLowerCase();
+        if (ct.includes('pdf')) name += '.pdf';
+        else if (ct.includes('png')) name += '.png';
+        else if (ct.includes('jpeg') || ct.includes('jpg')) name += '.jpg';
+        else name += '.bin';
+      }
+      downloadBlob(blob, name);
+      toast('Downloaded ' + name);
+    } catch (e) {
+      toast(e.message || 'Download failed');
+    }
+  }
+
+  // Event delegation for drawing download buttons (token sent as header)
+  document.addEventListener('click', function (ev) {
+    const btn = ev.target && ev.target.closest && ev.target.closest('button.dl-drawing');
+    if (!btn) return;
+    ev.preventDefault();
+    downloadDrawing(btn.getAttribute('data-id'), btn.getAttribute('data-kind') || 'original');
   });
 
   function downloadBlob(blob, name) {
