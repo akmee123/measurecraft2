@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MeasureCraft — Research Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1419; --sidebar: #161b22; --card: #1c2330; --elevated: #242d3c;
+      --ink: #e7ecf3; --muted: #8b9bb0; --border: #2d3748;
+      --teal: #2dd4bf; --teal-dim: rgba(45,212,191,.12); --blue: #60a5fa;
+      --amber: #fbbf24; --rose: #fb7185; --violet: #a78bfa; --ok: #34d399;
+      --danger: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, system-ui, sans-serif; background: var(--bg); color: var(--ink); display: flex; min-height: 100vh; }
+    .sidebar {
+      width: 240px; background: var(--sidebar); border-right: 1px solid var(--border);
+      padding: 18px 12px; display: flex; flex-direction: column; gap: 4px; flex-shrink: 0;
+      position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    }
+    .brand { padding: 8px 12px 18px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+    .brand h1 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: .02em; }
+    .brand p { margin: 4px 0 0; font-size: 11px; color: var(--muted); line-height: 1.4; }
+    .nav-btn {
+      display: block; width: 100%; text-align: left; background: transparent; border: none;
+      color: var(--muted); padding: 10px 12px; border-radius: 8px; font: inherit; font-size: 13px;
+      font-weight: 500; cursor: pointer;
+    }
+    .nav-btn:hover { background: var(--elevated); color: var(--ink); }
+    .nav-btn.active { background: var(--teal-dim); color: var(--teal); }
+    .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+      padding: 14px 22px; border-bottom: 1px solid var(--border); background: var(--sidebar);
+    }
+    .topbar h2 { margin: 0; font-size: 16px; font-weight: 600; }
+    .topbar .hint { font-size: 12px; color: var(--muted); }
+    .content { padding: 20px 22px 40px; max-width: 1400px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .kpi {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+    }
+    .kpi .v { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 600; color: var(--teal); }
+    .kpi .l { font-size: 11px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .04em; }
+    .card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+      padding: 16px 18px; margin-bottom: 16px;
+    }
+    .card h3 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+    .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 14px; }
+    label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    input, select {
+      font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+      background: var(--elevated); color: var(--ink); min-width: 130px;
+    }
+    button {
+      font: inherit; font-weight: 600; padding: 9px 14px; border-radius: 8px; border: none;
+      cursor: pointer; background: var(--teal); color: #0f1419;
+    }
+    button.secondary { background: var(--elevated); color: var(--ink); border: 1px solid var(--border); }
+    button.danger { background: var(--danger); color: #fff; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; position: sticky; top: 0; background: var(--card); }
+    tr:hover td { background: rgba(255,255,255,.02); }
+    .mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+    .muted { color: var(--muted); }
+    .ok { color: var(--ok); }
+    .warn { color: var(--amber); }
+    .bad { color: var(--danger); }
+    .tag {
+      display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+      background: var(--elevated); color: var(--muted);
+    }
+    .tag.pro { background: rgba(96,165,250,.15); color: var(--blue); }
+    .tag.simple { background: rgba(167,139,250,.15); color: var(--violet); }
+    .tag.ai { background: rgba(45,212,191,.15); color: var(--teal); }
+    .tag.corr { background: rgba(251,191,36,.15); color: var(--amber); }
+    .scroll { max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+    .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+    .chart-box { position: relative; height: 260px; }
+    .auth-gate {
+      max-width: 420px; margin: 80px auto; background: var(--card); border: 1px solid var(--border);
+      border-radius: 14px; padding: 28px; text-align: center;
+    }
+    .auth-gate h2 { margin: 0 0 8px; }
+    .auth-gate p { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+    .empty { text-align: center; padding: 32px; color: var(--muted); font-size: 13px; }
+    .toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--elevated);
+      border: 1px solid var(--border); padding: 10px 16px; border-radius: 8px; font-size: 13px;
+      opacity: 0; transition: opacity .2s; z-index: 50; pointer-events: none;
+    }
+    .toast.show { opacity: 1; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) {
+      body { flex-direction: column; }
+      .sidebar { width: 100%; height: auto; position: relative; flex-direction: row; flex-wrap: wrap; }
+      .two-col { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <aside class="sidebar" id="sidebar" style="display:none;">
+    <div class="brand">
+      <h1>MeasureCraft Research</h1>
+      <p>AI-Powered Digital Takeoff<br/>Housing Construction — Sri Lanka</p>
+    </div>
+    <button class="nav-btn active" data-panel="overview">Overview</button>
+    <button class="nav-btn" data-panel="participants">Participants</button>
+    <button class="nav-btn" data-panel="projects">Projects &amp; Drawings</button>
+    <button class="nav-btn" data-panel="sessions">Sessions</button>
+    <button class="nav-btn" data-panel="measurements">Measurements</button>
+    <button class="nav-btn" data-panel="accuracy">AI Accuracy</button>
+    <button class="nav-btn" data-panel="aiHuman">AI vs Human</button>
+    <button class="nav-btn" data-panel="modes">Simple vs Pro</button>
+    <button class="nav-btn" data-panel="corrections">Corrections</button>
+    <button class="nav-btn" data-panel="groundtruth">Ground Truth</button>
+    <button class="nav-btn" data-panel="exports">Exports</button>
+  </aside>
+
+  <div class="main">
+    <div id="authGate" class="auth-gate">
+      <h2>Researcher access</h2>
+      <p>Enter the <code>RESEARCH_ADMIN_TOKEN</code> to open the research dashboard. Participant personal data is not shown — IDs only.</p>
+      <label style="text-align:left;display:block;margin-bottom:10px;">Admin token
+        <input id="tokenInput" type="password" placeholder="Research admin token" style="width:100%;margin-top:6px;" />
+      </label>
+      <button type="button" id="btnUnlock">Unlock dashboard</button>
+      <p class="hint" id="authMsg" style="margin-top:12px;"></p>
+    </div>
+
+    <div id="appShell" style="display:none;">
+      <div class="topbar">
+        <div>
+          <h2 id="panelTitle">Overview</h2>
+          <div class="hint">All figures computed from live research storage — never hard-coded.</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <button type="button" class="secondary" id="btnRefresh">Refresh data</button>
+          <span class="hint mono" id="lastRefresh"></span>
+        </div>
+      </div>
+      <div class="content">
+        <!-- OVERVIEW -->
+        <section class="panel active" id="panel-overview">
+          <div class="kpi-grid" id="kpiGrid"></div>
+          <div class="charts">
+            <div class="card"><h3>Measurements over time</h3><div class="chart-box"><canvas id="chartTime"></canvas></div></div>
+            <div class="card"><h3>Simple vs Pro volume</h3><div class="chart-box"><canvas id="chartMode"></canvas></div></div>
+            <div class="card"><h3>Quantity error by type</h3><div class="chart-box"><canvas id="chartError"></canvas></div></div>
+            <div class="card"><h3>Correction actions</h3><div class="chart-box"><canvas id="chartCorr"></canvas></div></div>
+          </div>
+          <div class="card">
+            <h3>Research questions — current evidence</h3>
+            <div id="researchAnswers" class="muted" style="font-size:13px;line-height:1.6;"></div>
+          </div>
+        </section>
+
+        <!-- PARTICIPANTS -->
+        <section class="panel" id="panel-participants">
+          <div class="card">
+            <h3>Participants (anonymous IDs)</h3>
+            <div class="scroll"><table>
+              <thead><tr>
+                <th>ID</th><th>Sessions</th><th>Projects</th><th>Drawings</th><th>Measurements</th>
+                <th>Simple</th><th>Pro</th><th>AI-assisted</th><th>Manual</th><th>Corrections</th>
+                <th>Avg time (s)</th><th>Last activity</th>
+              </tr></thead>
+              <tbody id="tbodyParticipants"></tbody>
+            </table></div>
+            <p class="muted" id="partCount" style="margin-top:10px;font-size:12px;"></p>
+          </div>
+        </section>
+
+        <!-- PROJECTS -->
+        <section class="panel" id="panel-projects">
+          <div class="card">
+            <h3>Projects &amp; drawings (kept separate)</h3>
+            <div class="scroll"><table>
+              <thead><tr>
+                <th>Project</th><th>Drawing</th><th>Participant</th><th>Mode</th><th>Revision</th>
+                <th>File</th><th>Uploaded</th><th>Scale</th><th>Actions</th>
+              </tr></thead>
+              <tbody id="tbodyProjects"></tbody>
+            </table></div>
+            <p class="muted" id="projCount" style="margin-top:10px;font-size:12px;"></p>
+          </div>
+          <div class="card">
+            <h3>Stored drawings</h3>
+            <div class="scroll"><table>
+              <thead><tr><th>Drawing</th><th>File</th><th>Participant</th><th>Uploaded</th><th>Download</th></tr></thead>
+              <tbody id="tbodyDrawings"></tbody>
+            </table></div>
+          </div>
+        </section>
+
+        <!-- SESSIONS -->
+        <section class="panel" id="panel-sessions">
+          <div class="card">
+            <h3>Research sessions</h3>
+            <div class="scroll"><table>
+              <thead><tr>
+                <th>Session</th><th>Participant</th><th>Mode</th><th>Started</th><th>Ended</th>
+                <th>Duration (s)</th><th>Project</th><th>Drawing</th>
+              </tr></thead>
+              <tbody id="tbodySessions"></tbody>
+            </table></div>
+            <p class="muted" id="sessCount" style="margin-top:10px;font-size:12px;"></p>
+          </div>
+        </section>
+
+        <!-- MEASUREMENTS -->
+        <section class="panel" id="panel-measurements">
+          <div class="card">
+            <h3>Filters</h3>
+            <div class="filters">
+              <label>Participant<input id="fPart" placeholder="P01" /></label>
+              <label>Mode<select id="fMode"><option value="">All</option><option>Simple</option><option>Pro</option></select></label>
+              <label>Drawing<input id="fDwg" placeholder="DWG-0001" /></label>
+              <label>Type<input id="fType" placeholder="wall / slab" /></label>
+              <label>Corrected<select id="fCorr"><option value="">All</option><option value="true">Yes</option><option value="false">No</option></select></label>
+              <button type="button" id="btnFilter">Apply</button>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Measurement records</h3>
+            <p class="muted" style="font-size:12px;margin:0 0 10px;">Columns separate AI · User · Reference · Final. Missing values show N/A (never forced to 0 for accuracy).</p>
+            <div class="scroll"><table>
+              <thead><tr>
+                <th>Record</th><th>Part.</th><th>Mode</th><th>Type</th><th>AI</th><th>User</th>
+                <th>Reference</th><th>Final</th><th>Δ%</th><th>Corr.</th><th>Time (s)</th><th>Date</th>
+              </tr></thead>
+              <tbody id="tbodyMeas"></tbody>
+            </table></div>
+            <p class="muted" id="measCount" style="margin-top:10px;font-size:12px;"></p>
+          </div>
+        </section>
+
+        <!-- ACCURACY -->
+        <section class="panel" id="panel-accuracy">
+          <div class="card">
+            <h3>Quantity error by element type</h3>
+            <p class="muted" style="font-size:12px;margin:0 0 10px;">Error % only when both values exist. Empty pairs are excluded — not treated as zero.</p>
+            <div class="scroll"><table>
+              <thead><tr>
+                <th>Element</th><th>Rows</th><th>With AI</th><th>With Ref</th><th>Corrections</th>
+                <th>Mean AI vs Ref %</th><th>Mean Final vs Ref %</th><th>Mean AI vs Final %</th>
+              </tr></thead>
+              <tbody id="tbodyAccuracy"></tbody>
+            </table></div>
+          </div>
+          <div class="card">
+            <h3>Detection accuracy (IoU / Precision / Recall / F1)</h3>
+            <p class="muted" style="font-size:12px;margin:0 0 10px;">From reviewed annotations when geometric ground truth is available.</p>
+            <div id="detectAccBox" class="empty">No annotation-based detection metrics yet.</div>
+            <div class="scroll" style="margin-top:10px;"><table>
+              <thead><tr><th>Element</th><th>TP</th><th>FP</th><th>FN</th><th>Precision</th><th>Recall</th><th>F1</th><th>Mean IoU</th></tr></thead>
+              <tbody id="tbodyDetect"></tbody>
+            </table></div>
+          </div>
+        </section>
+
+        <!-- AI VS HUMAN -->
+        <section class="panel" id="panel-aiHuman">
+          <div class="card">
+            <h3>AI vs Human / Ground Truth</h3>
+            <div class="scroll"><table>
+              <thead><tr>
+                <th>Record</th><th>Type</th><th>AI</th><th>Human</th><th>Reference</th><th>Final</th>
+                <th>AI Error %</th><th>Final Error %</th>
+              </tr></thead>
+              <tbody id="tbodyAiHuman"></tbody>
+            </table></div>
+          </div>
+        </section>
+
+        <!-- MODES -->
+        <section class="panel" id="panel-modes">
+          <div class="two-col" id="modeCards"></div>
+          <div class="card"><h3>Mode comparison chart</h3><div class="chart-box"><canvas id="chartModeDetail"></canvas></div></div>
+        </section>
+
+        <!-- CORRECTIONS -->
+        <section class="panel" id="panel-corrections">
+          <div class="card">
+            <h3>Element lifecycle events</h3>
+            <div id="corrSummary" class="kpi-grid"></div>
+            <div class="scroll" style="margin-top:12px;"><table>
+              <thead><tr>
+                <th>Time</th><th>Action</th><th>Participant</th><th>Type</th><th>Label</th>
+                <th>Source</th><th>Mode</th><th>Drawing</th>
+              </tr></thead>
+              <tbody id="tbodyEvents"></tbody>
+            </table></div>
+          </div>
+        </section>
+
+        <!-- GROUND TRUTH -->
+        <section class="panel" id="panel-groundtruth">
+          <div class="card">
+            <h3>Set reference (ground truth) quantity</h3>
+            <p class="muted" style="font-size:12px;margin:0 0 12px;">Reference never overwrites AI or final values. Used only for error calculation.</p>
+            <div class="filters">
+              <label>Drawing ID<input id="gtDwg" placeholder="DWG-0001" /></label>
+              <label>Element type<input id="gtType" placeholder="wall" /></label>
+              <label>Reference value<input id="gtVal" type="number" step="any" /></label>
+              <label>Unit<input id="gtUnit" placeholder="m²" /></label>
+              <label>Notes<input id="gtNotes" placeholder="optional" /></label>
+              <button type="button" id="btnGtSave">Save reference</button>
+            </div>
+            <p class="muted" id="gtMsg" style="font-size:12px;"></p>
+          </div>
+          <div class="card">
+            <h3>Stored ground-truth quantities</h3>
+            <div class="scroll"><table>
+              <thead><tr><th>Drawing</th><th>Type</th><th>Value</th><th>Unit</th><th>Notes</th><th>Updated</th></tr></thead>
+              <tbody id="tbodyGt"></tbody>
+            </table></div>
+          </div>
+        </section>
+
+        <!-- EXPORTS -->
+        <section class="panel" id="panel-exports">
+          <div class="card">
+            <h3>Research data export</h3>
+            <p class="muted" style="font-size:12px;margin:0 0 12px;">Suitable for Excel, SPSS, Python, R. Explicit researcher action only — nothing is auto-trained.</p>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+              <button type="button" id="btnCsv">Export CSV</button>
+              <button type="button" id="btnJson">Export JSON</button>
+              <button type="button" class="secondary" id="btnTrain">AI training export (JSON)</button>
+              <button type="button" class="secondary" id="btnAnnot">Annotation export</button>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Data management</h3>
+            <p class="muted" style="font-size:12px;margin:0 0 12px;">Destructive actions require confirmation. Historical IDs are never silently rewritten.</p>
+            <button type="button" class="danger" id="btnClearAll">Clear all research data…</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+(function () {
+  'use strict';
+  const TOKEN_KEY = 'mc-research-token';
+  let token = sessionStorage.getItem(TOKEN_KEY) || '';
+  let cache = {
+    summary: null, participants: [], projects: [], sessions: [],
+    measurements: [], accuracy: [], modes: null, corrections: null,
+    events: [], drawings: [], refs: {}, detect: null
+  };
+  const charts = {};
+
+  function $(id) { return document.getElementById(id); }
+  function toast(msg) {
+    const el = $('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), 2800);
+  }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function na(v) {
+    if (v == null || v === '') return '<span class="muted">N/A</span>';
+    return esc(v);
+  }
+  function numFmt(v, d) {
+    if (v == null || v === '' || !Number.isFinite(Number(v))) return null;
+    return Number(v).toFixed(d != null ? d : 2);
+  }
+  function headers() {
+    const h = { 'Content-Type': 'application/json' };
+    if (token) h['X-Research-Token'] = token;
+    return h;
+  }
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({ headers: headers() }, opts || {}));
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(data.error || 'Unauthorized — check RESEARCH_ADMIN_TOKEN');
+    }
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+  }
+
+  async function loadAll() {
+    const q = new URLSearchParams();
+    const part = ($('fPart') && $('fPart').value || '').trim();
+    const mode = ($('fMode') && $('fMode').value) || '';
+    const dwg = ($('fDwg') && $('fDwg').value || '').trim();
+    const type = ($('fType') && $('fType').value || '').trim();
+    const corr = ($('fCorr') && $('fCorr').value) || '';
+    if (part) q.set('participantId', part);
+    if (mode) q.set('mode', mode);
+    if (dwg) q.set('drawingId', dwg);
+    if (type) q.set('measurementType', type);
+    if (corr) q.set('userCorrection', corr);
+    q.set('limit', '2000');
+
+    const [
+      summary, participants, projects, sessions, records,
+      accuracy, modes, corrections, events, drawings, refs, detect
+    ] = await Promise.all([
+      api('/api/research/summary'),
+      api('/api/research/participants'),
+      api('/api/research/projects'),
+      api('/api/research/sessions'),
+      api('/api/research/records?' + q.toString()),
+      api('/api/research/quantity-accuracy'),
+      api('/api/research/mode-comparison'),
+      api('/api/research/corrections'),
+      api('/api/research/element-events?limit=500'),
+      api('/api/research/drawings'),
+      api('/api/research/reference-quantities'),
+      api('/api/research/accuracy-baseline').catch(() => null)
+    ]);
+
+    cache.summary = summary.stats || summary.summary || summary;
+    cache.participants = participants.participants || [];
+    cache.projects = projects.projects || projects.rows || [];
+    cache.sessions = sessions.sessions || sessions.rows || [];
+    cache.measurements = records.records || records.rows || records.measurements || [];
+    cache.accuracy = accuracy.byType || [];
+    cache.modes = modes.comparison || null;
+    cache.corrections = corrections;
+    cache.events = events.events || [];
+    cache.drawings = drawings.drawings || [];
+    cache.refs = refs.quantities || refs.referenceQuantities || refs || {};
+    cache.detect = detect;
+
+    renderAll();
+    $('lastRefresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  }
+
+  function renderKpis() {
+    const s = cache.summary || {};
+    const items = [
+      ['Participants', s.uniqueParticipants],
+      ['Projects', s.totalProjects],
+      ['Drawings', s.totalDrawings],
+      ['Measurements', s.totalMeasurements],
+      ['Sessions', s.totalSessions],
+      ['AI qty rows', s.aiMeasurementRows],
+      ['Reviewed / final', s.finalRows],
+      ['Corrections', s.correctedCount],
+      ['Median error %', s.meanAbsPctErrorVsReference != null ? s.meanAbsPctErrorVsReference : 'N/A'],
+      ['Mean error %', s.primaryMeanAbsPct != null ? s.primaryMeanAbsPct : 'N/A'],
+      ['Avg meas. time (s)', s.avgMeasurementDurationSec != null ? s.avgMeasurementDurationSec : 'N/A'],
+      ['Simple / Pro', (s.simpleCount || 0) + ' / ' + (s.proCount || 0)],
+    ];
+    $('kpiGrid').innerHTML = items.map(([l, v]) =>
+      '<div class="kpi"><div class="v">' + esc(v == null ? 0 : v) + '</div><div class="l">' + esc(l) + '</div></div>'
+    ).join('');
+
+    const answers = [];
+    answers.push('<strong>1. AI accuracy:</strong> ' +
+      (s.meanAbsPctErrorVsReference != null
+        ? 'Median abs. error vs reference/AI baseline ≈ <span class="mono">' + esc(s.meanAbsPctErrorVsReference) + '%</span> (' +
+          (s.rowsWithError || 0) + ' comparable rows).'
+        : 'Not enough paired AI/reference rows yet.'));
+    answers.push('<strong>2–3. Element strengths/weaknesses:</strong> see AI Accuracy panel (by type).');
+    answers.push('<strong>4. Human correction:</strong> ' + (s.correctedCount || 0) +
+      ' corrected rows (' + (s.correctionRate || 0) + '% of measurements).');
+    answers.push('<strong>5–6. Time:</strong> avg measurement duration ' +
+      (s.avgMeasurementDurationSec != null ? s.avgMeasurementDurationSec + ' s' : 'N/A') +
+      '. Time-saved % requires paired manual vs AI-assisted sessions on the same drawing.');
+    answers.push('<strong>8. Simple vs Pro:</strong> ' + (s.simpleCount || 0) + ' Simple / ' +
+      (s.proCount || 0) + ' Pro measurement rows.');
+    answers.push('<strong>9–11. Corrections, ground truth, participants:</strong> use Corrections, Ground Truth, and Participants panels.');
+    $('researchAnswers').innerHTML = answers.map(a => '<div style="margin-bottom:8px;">' + a + '</div>').join('');
+  }
+
+  function destroyChart(key) {
+    if (charts[key]) { charts[key].destroy(); delete charts[key]; }
+  }
+
+  function renderCharts() {
+    if (typeof Chart === 'undefined') return;
+    const meas = cache.measurements || [];
+    const byDay = {};
+    meas.forEach(m => {
+      const d = (m.date || (m.createdAt || '').slice(0, 10) || 'unknown');
+      byDay[d] = (byDay[d] || 0) + 1;
+    });
+    const days = Object.keys(byDay).sort();
+    destroyChart('time');
+    charts.time = new Chart($('chartTime'), {
+      type: 'line',
+      data: {
+        labels: days,
+        datasets: [{ label: 'Records', data: days.map(d => byDay[d]), borderColor: '#2dd4bf', tension: 0.25, fill: false }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+        scales: { x: { ticks: { color: '#8b9bb0' } }, y: { ticks: { color: '#8b9bb0' }, beginAtZero: true } } }
+    });
+
+    const s = cache.summary || {};
+    destroyChart('mode');
+    charts.mode = new Chart($('chartMode'), {
+      type: 'doughnut',
+      data: {
+        labels: ['Simple', 'Pro'],
+        datasets: [{ data: [s.simpleCount || 0, s.proCount || 0], backgroundColor: ['#a78bfa', '#60a5fa'] }]
+      },
+      options: { responsive: true, maintainAspectRatio: false }
+    });
+
+    const acc = cache.accuracy || [];
+    destroyChart('error');
+    charts.error = new Chart($('chartError'), {
+      type: 'bar',
+      data: {
+        labels: acc.map(r => r.elementType),
+        datasets: [{
+          label: 'Mean AI vs Ref %',
+          data: acc.map(r => r.meanAiVsRefErrorPct),
+          backgroundColor: '#2dd4bf'
+        }]
+      },
+      options: { responsive: true, maintainAspectRatio: false,
+        scales: { x: { ticks: { color: '#8b9bb0' } }, y: { ticks: { color: '#8b9bb0' }, beginAtZero: true } } }
+    });
+
+    const corr = (cache.corrections && cache.corrections.byAction) || {};
+    const corrKeys = Object.keys(corr);
+    destroyChart('corr');
+    charts.corr = new Chart($('chartCorr'), {
+      type: 'bar',
+      data: {
+        labels: corrKeys,
+        datasets: [{ label: 'Events', data: corrKeys.map(k => corr[k]), backgroundColor: '#fbbf24' }]
+      },
+      options: { responsive: true, maintainAspectRatio: false,
+        scales: { x: { ticks: { color: '#8b9bb0' } }, y: { ticks: { color: '#8b9bb0' }, beginAtZero: true } } }
+    });
+  }
+
+  function renderParticipants() {
+    const rows = cache.participants || [];
+    $('tbodyParticipants').innerHTML = rows.length ? rows.map(r => '<tr>' +
+      '<td class="mono">' + esc(r.participantId) + '</td>' +
+      '<td>' + esc(r.sessions) + '</td><td>' + esc(r.projects) + '</td><td>' + esc(r.drawings) + '</td>' +
+      '<td>' + esc(r.measurements) + '</td><td>' + esc(r.simpleCount) + '</td><td>' + esc(r.proCount) + '</td>' +
+      '<td>' + esc(r.aiAssisted) + '</td><td>' + esc(r.manual) + '</td><td>' + esc(r.corrections) + '</td>' +
+      '<td>' + na(numFmt(r.avgMeasurementDurationSec, 1)) + '</td>' +
+      '<td class="mono">' + na(r.lastActivity && String(r.lastActivity).replace('T', ' ').slice(0, 19)) + '</td>' +
+      '</tr>').join('') : '<tr><td colspan="12" class="empty">No participants yet</td></tr>';
+    $('partCount').textContent = rows.length + ' participant(s)';
+  }
+
+  function renderProjects() {
+    const rows = cache.projects || [];
+    $('tbodyProjects').innerHTML = rows.length ? rows.map(p => '<tr>' +
+      '<td class="mono">' + esc(p.projectId) + '</td>' +
+      '<td class="mono">' + esc(p.drawingId) + '</td>' +
+      '<td class="mono">' + esc(p.participantId) + '</td>' +
+      '<td><span class="tag ' + (p.mode === 'Pro' ? 'pro' : 'simple') + '">' + esc(p.mode || '—') + '</span></td>' +
+      '<td>' + esc(p.revision || 'ORIGINAL') + '</td>' +
+      '<td>' + esc(p.fileName || '—') + '</td>' +
+      '<td class="mono">' + esc((p.uploadedAt || '').replace('T', ' ').slice(0, 19)) + '</td>' +
+      '<td>' + esc(p.scaleNote || '—') + '</td>' +
+      '<td>' + (p.drawingId
+        ? '<a href="/api/research/drawing/' + encodeURIComponent(p.drawingId) + '" style="color:var(--teal)">Original</a>'
+        : '—') + '</td>' +
+      '</tr>').join('') : '<tr><td colspan="9" class="empty">No projects registered yet</td></tr>';
+    $('projCount').textContent = rows.length + ' project row(s) · drawings stay unique (DWG-####)';
+
+    const dwgs = cache.drawings || [];
+    $('tbodyDrawings').innerHTML = dwgs.length ? dwgs.map(d => '<tr>' +
+      '<td class="mono">' + esc(d.drawingId) + '</td>' +
+      '<td>' + esc(d.fileName || d.name || '—') + '</td>' +
+      '<td class="mono">' + esc(d.participantId || '—') + '</td>' +
+      '<td class="mono">' + esc((d.uploadedAt || '').replace('T', ' ').slice(0, 19) || '—') + '</td>' +
+      '<td>' + (d.drawingId
+        ? '<a href="/api/research/drawing/' + encodeURIComponent(d.drawingId) + '" style="color:var(--teal)">Download</a>'
+        : '—') + '</td></tr>').join('') : '<tr><td colspan="5" class="empty">No stored drawings</td></tr>';
+  }
+
+  function renderSessions() {
+    const rows = cache.sessions || [];
+    $('tbodySessions').innerHTML = rows.length ? rows.map(s => {
+      const dur = s.durationSec != null ? s.durationSec
+        : (s.startedAt && s.endedAt
+          ? Math.max(0, Math.round((new Date(s.endedAt) - new Date(s.startedAt)) / 1000))
+          : null);
+      return '<tr>' +
+        '<td class="mono">' + esc(s.sessionId) + '</td>' +
+        '<td class="mono">' + esc(s.participantId) + '</td>' +
+        '<td><span class="tag ' + (String(s.mode) === 'Pro' ? 'pro' : 'simple') + '">' + esc(s.mode) + '</span></td>' +
+        '<td class="mono">' + esc((s.startedAt || '').replace('T', ' ').slice(0, 19)) + '</td>' +
+        '<td class="mono">' + na(s.endedAt && String(s.endedAt).replace('T', ' ').slice(0, 19)) + '</td>' +
+        '<td>' + na(dur) + '</td>' +
+        '<td class="mono">' + na(s.projectId) + '</td>' +
+        '<td class="mono">' + na(s.drawingId) + '</td></tr>';
+    }).join('') : '<tr><td colspan="8" class="empty">No sessions</td></tr>';
+    $('sessCount').textContent = rows.length + ' session(s)';
+  }
+
+  function renderMeasurements() {
+    const rows = cache.measurements || [];
+    $('tbodyMeas').innerHTML = rows.length ? rows.map(m => {
+      const finalV = m.finalAcceptedMeasurement != null ? m.finalAcceptedMeasurement : m.userMeasurement;
+      return '<tr>' +
+        '<td class="mono">' + esc(m.recordId) + '</td>' +
+        '<td class="mono">' + esc(m.participantId) + '</td>' +
+        '<td><span class="tag ' + (m.measurementMode === 'Pro' ? 'pro' : 'simple') + '">' + esc(m.measurementMode) + '</span></td>' +
+        '<td>' + esc(m.measurementType) + '</td>' +
+        '<td class="mono">' + na(m.aiMeasurement) + '</td>' +
+        '<td class="mono">' + na(m.userMeasurement) + '</td>' +
+        '<td class="mono">' + na(m.referenceMeasurement) + '</td>' +
+        '<td class="mono">' + na(finalV) + '</td>' +
+        '<td class="mono">' + na(numFmt(m.differencePct, 2)) + '</td>' +
+        '<td>' + (m.userCorrection ? '<span class="tag corr">Yes</span>' : '—') + '</td>' +
+        '<td>' + na(m.measurementDurationSec) + '</td>' +
+        '<td class="mono">' + esc(m.date || (m.createdAt || '').slice(0, 10)) + '</td></tr>';
+    }).join('') : '<tr><td colspan="12" class="empty">No measurement records</td></tr>';
+    $('measCount').textContent = rows.length + ' record(s) shown';
+
+    // AI vs Human subset
+    const paired = rows.filter(m =>
+      m.aiMeasurement != null || m.referenceMeasurement != null || m.userMeasurement != null
+    ).slice(0, 300);
+    $('tbodyAiHuman').innerHTML = paired.length ? paired.map(m => {
+      const finalV = m.finalAcceptedMeasurement != null ? m.finalAcceptedMeasurement : m.userMeasurement;
+      const ai = m.aiMeasurement != null ? Number(m.aiMeasurement) : null;
+      const ref = m.referenceMeasurement != null ? Number(m.referenceMeasurement) : null;
+      const fin = finalV != null ? Number(finalV) : null;
+      let aiErr = null, finErr = null;
+      if (ai != null && ref != null && Math.abs(ref) > 1e-9) aiErr = Math.abs(ai - ref) / Math.abs(ref) * 100;
+      if (fin != null && ref != null && Math.abs(ref) > 1e-9) finErr = Math.abs(fin - ref) / Math.abs(ref) * 100;
+      return '<tr>' +
+        '<td class="mono">' + esc(m.recordId) + '</td>' +
+        '<td>' + esc(m.measurementType) + '</td>' +
+        '<td class="mono">' + na(m.aiMeasurement) + '</td>' +
+        '<td class="mono">' + na(m.userMeasurement) + '</td>' +
+        '<td class="mono">' + na(m.referenceMeasurement) + '</td>' +
+        '<td class="mono">' + na(finalV) + '</td>' +
+        '<td class="mono">' + na(numFmt(aiErr, 2)) + '</td>' +
+        '<td class="mono">' + na(numFmt(finErr, 2)) + '</td></tr>';
+    }).join('') : '<tr><td colspan="8" class="empty">No comparable AI/human rows</td></tr>';
+  }
+
+  function renderAccuracy() {
+    const rows = cache.accuracy || [];
+    $('tbodyAccuracy').innerHTML = rows.length ? rows.map(r => '<tr>' +
+      '<td>' + esc(r.elementType) + '</td>' +
+      '<td>' + esc(r.count) + '</td>' +
+      '<td>' + esc(r.withAi) + '</td>' +
+      '<td>' + esc(r.withRef) + '</td>' +
+      '<td>' + esc(r.corrections) + '</td>' +
+      '<td class="mono">' + na(numFmt(r.meanAiVsRefErrorPct, 2)) + '</td>' +
+      '<td class="mono">' + na(numFmt(r.meanFinalVsRefErrorPct, 2)) + '</td>' +
+      '<td class="mono">' + na(numFmt(r.meanAiVsFinalErrorPct, 2)) + '</td></tr>'
+    ).join('') : '<tr><td colspan="8" class="empty">No quantity accuracy data yet</td></tr>';
+
+    const det = cache.detect;
+    const byType = (det && (det.byType || det.types || det.results)) || null;
+    if (byType && typeof byType === 'object') {
+      const list = Array.isArray(byType) ? byType : Object.keys(byType).map(k => Object.assign({ elementType: k }, byType[k]));
+      $('detectAccBox').textContent = det.summary || det.message || (list.length + ' element type(s) with annotation metrics');
+      $('tbodyDetect').innerHTML = list.map(r => '<tr>' +
+        '<td>' + esc(r.elementType || r.type) + '</td>' +
+        '<td>' + na(r.tp) + '</td><td>' + na(r.fp) + '</td><td>' + na(r.fn) + '</td>' +
+        '<td class="mono">' + na(numFmt(r.precision, 3)) + '</td>' +
+        '<td class="mono">' + na(numFmt(r.recall, 3)) + '</td>' +
+        '<td class="mono">' + na(numFmt(r.f1, 3)) + '</td>' +
+        '<td class="mono">' + na(numFmt(r.meanIoU || r.iou, 3)) + '</td></tr>'
+      ).join('') || '<tr><td colspan="8" class="empty">No detection metrics</td></tr>';
+    } else {
+      $('detectAccBox').textContent = 'No annotation-based detection metrics yet. Review drawings and save annotations to populate Precision/Recall/F1/IoU.';
+      $('tbodyDetect').innerHTML = '<tr><td colspan="8" class="empty">—</td></tr>';
+    }
+  }
+
+  function renderModes() {
+    const c = cache.modes || {};
+    const simple = c.simple || {};
+    const pro = c.pro || {};
+    function card(title, m) {
+      return '<div class="card"><h3>' + esc(title) + '</h3>' +
+        '<div class="kpi-grid">' +
+        [['Participants', m.participants], ['Sessions', m.sessions], ['Measurements', m.measurements],
+         ['Avg duration (s)', m.avgDurationSec != null ? m.avgDurationSec : 'N/A'],
+         ['Corrections', m.corrections], ['Correction %', m.correctionRate != null ? m.correctionRate : 'N/A'],
+         ['AI-assisted', m.aiAssisted], ['AI-assisted %', m.aiAssistedRate != null ? m.aiAssistedRate : 'N/A']
+        ].map(([l, v]) => '<div class="kpi"><div class="v">' + esc(v == null ? 0 : v) + '</div><div class="l">' + esc(l) + '</div></div>').join('') +
+        '</div></div>';
+    }
+    $('modeCards').innerHTML = card('Simple Mode', simple) + card('Pro Mode', pro);
+
+    if (typeof Chart !== 'undefined') {
+      destroyChart('modeDetail');
+      charts.modeDetail = new Chart($('chartModeDetail'), {
+        type: 'bar',
+        data: {
+          labels: ['Participants', 'Sessions', 'Measurements', 'Corrections', 'AI-assisted'],
+          datasets: [
+            { label: 'Simple', data: [simple.participants||0, simple.sessions||0, simple.measurements||0, simple.corrections||0, simple.aiAssisted||0], backgroundColor: '#a78bfa' },
+            { label: 'Pro', data: [pro.participants||0, pro.sessions||0, pro.measurements||0, pro.corrections||0, pro.aiAssisted||0], backgroundColor: '#60a5fa' }
+          ]
+        },
+        options: { responsive: true, maintainAspectRatio: false,
+          scales: { x: { ticks: { color: '#8b9bb0' } }, y: { ticks: { color: '#8b9bb0' }, beginAtZero: true } } }
+      });
+    }
+  }
+
+  function renderCorrections() {
+    const c = cache.corrections || {};
+    const by = c.byAction || {};
+    $('corrSummary').innerHTML = Object.keys(by).length
+      ? Object.keys(by).map(k => '<div class="kpi"><div class="v">' + esc(by[k]) + '</div><div class="l">' + esc(k) + '</div></div>').join('')
+      : '<div class="empty">No element events yet</div>';
+    const ev = cache.events || [];
+    $('tbodyEvents').innerHTML = ev.length ? ev.slice(0, 400).map(e => '<tr>' +
+      '<td class="mono">' + esc((e.ts || '').replace('T', ' ').slice(0, 19)) + '</td>' +
+      '<td><span class="tag">' + esc(e.action) + '</span></td>' +
+      '<td class="mono">' + esc(e.participantId) + '</td>' +
+      '<td>' + esc(e.elementType) + '</td>' +
+      '<td>' + esc(e.elementLabel || '—') + '</td>' +
+      '<td>' + esc(e.source || '—') + '</td>' +
+      '<td>' + esc(e.mode || '—') + '</td>' +
+      '<td class="mono">' + na(e.drawingId) + '</td></tr>'
+    ).join('') : '<tr><td colspan="8" class="empty">No events</td></tr>';
+  }
+
+  function renderGroundTruth() {
+    const refs = cache.refs || {};
+    const rows = [];
+    Object.keys(refs).forEach(dwg => {
+      const types = refs[dwg] || {};
+      Object.keys(types).forEach(t => {
+        const r = types[t] || {};
+        rows.push({ drawingId: dwg, type: t, value: r.value, unit: r.unit, notes: r.notes, updatedAt: r.updatedAt });
+      });
+    });
+    $('tbodyGt').innerHTML = rows.length ? rows.map(r => '<tr>' +
+      '<td class="mono">' + esc(r.drawingId) + '</td>' +
+      '<td>' + esc(r.type) + '</td>' +
+      '<td class="mono">' + na(r.value) + '</td>' +
+      '<td>' + na(r.unit) + '</td>' +
+      '<td>' + esc(r.notes || '') + '</td>' +
+      '<td class="mono">' + na(r.updatedAt && String(r.updatedAt).replace('T', ' ').slice(0, 19)) + '</td></tr>'
+    ).join('') : '<tr><td colspan="6" class="empty">No ground-truth quantities stored</td></tr>';
+  }
+
+  function renderAll() {
+    renderKpis();
+    renderCharts();
+    renderParticipants();
+    renderProjects();
+    renderSessions();
+    renderMeasurements();
+    renderAccuracy();
+    renderModes();
+    renderCorrections();
+    renderGroundTruth();
+  }
+
+  // Navigation
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const id = btn.dataset.panel;
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      const panel = $('panel-' + id);
+      if (panel) panel.classList.add('active');
+      $('panelTitle').textContent = btn.textContent.trim();
+    });
+  });
+
+  $('btnUnlock').addEventListener('click', async () => {
+    token = ($('tokenInput').value || '').trim();
+    sessionStorage.setItem(TOKEN_KEY, token);
+    $('authMsg').textContent = 'Checking…';
+    try {
+      await api('/api/research/summary');
+      $('authGate').style.display = 'none';
+      $('sidebar').style.display = '';
+      $('appShell').style.display = '';
+      await loadAll();
+      toast('Dashboard unlocked');
+    } catch (err) {
+      $('authMsg').textContent = err.message || 'Access denied';
+      $('authMsg').className = 'bad';
+    }
+  });
+
+  $('btnRefresh').addEventListener('click', () => loadAll().then(() => toast('Refreshed')).catch(e => toast(e.message)));
+  $('btnFilter').addEventListener('click', () => loadAll().then(() => toast('Filters applied')).catch(e => toast(e.message)));
+
+  $('btnGtSave').addEventListener('click', async () => {
+    try {
+      const body = {
+        drawingId: $('gtDwg').value.trim(),
+        measurementType: $('gtType').value.trim(),
+        value: $('gtVal').value === '' ? null : Number($('gtVal').value),
+        unit: $('gtUnit').value.trim() || null,
+        notes: $('gtNotes').value.trim() || null
+      };
+      await api('/api/research/reference-quantities', { method: 'POST', body: JSON.stringify(body) });
+      $('gtMsg').textContent = 'Saved.';
+      $('gtMsg').className = 'ok';
+      await loadAll();
+    } catch (err) {
+      $('gtMsg').textContent = err.message;
+      $('gtMsg').className = 'bad';
+    }
+  });
+
+  function downloadBlob(blob, name) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  $('btnCsv').addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/research/export?format=csv', { headers: headers() });
+      if (!res.ok) throw new Error('Export failed');
+      downloadBlob(await res.blob(), 'measurecraft-research.csv');
+    } catch (e) { toast(e.message); }
+  });
+  $('btnJson').addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/research/export?format=json', { headers: headers() });
+      if (!res.ok) throw new Error('Export failed');
+      downloadBlob(await res.blob(), 'measurecraft-research.json');
+    } catch (e) { toast(e.message); }
+  });
+  $('btnTrain').addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/research/training-export', { headers: headers() });
+      if (!res.ok) throw new Error('Export failed');
+      downloadBlob(await res.blob(), 'measurecraft-training-export.json');
+      toast('Training export downloaded — review before any offline training');
+    } catch (e) { toast(e.message); }
+  });
+  $('btnAnnot').addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/research/annotation-export', { headers: headers() });
+      if (!res.ok) throw new Error('Export failed');
+      downloadBlob(await res.blob(), 'measurecraft-annotations.json');
+    } catch (e) { toast(e.message); }
+  });
+  $('btnClearAll').addEventListener('click', async () => {
+    if (!confirm('Delete ALL research data (measurements, sessions, events)? This cannot be undone.')) return;
+    if (!confirm('Final confirmation: clear entire research dataset?')) return;
+    try {
+      await api('/api/research/clear-all', { method: 'POST', body: '{}' });
+      toast('Research data cleared');
+      await loadAll();
+    } catch (e) { toast(e.message); }
+  });
+
+  // Auto-unlock if token already stored
+  if (token) {
+    api('/api/research/summary').then(() => {
+      $('authGate').style.display = 'none';
+      $('sidebar').style.display = '';
+      $('appShell').style.display = '';
+      return loadAll();
+    }).catch(() => { token = ''; sessionStorage.removeItem(TOKEN_KEY); });
+  }
+})();
+  </script>
+</body>
+</html>
