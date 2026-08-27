@@ -28,16 +28,24 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map((value) => value.trim()).filter(Boolean);
+// Render sets RENDER_EXTERNAL_URL (e.g. https://measurecraftnew.onrender.com).
+// Always allow our own public URL so same-origin browser fetches work in production
+// even when ALLOWED_ORIGINS is not configured.
 const renderExternalUrl = (process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
 if (renderExternalUrl && !allowedOrigins.includes(renderExternalUrl)) {
   allowedOrigins.push(renderExternalUrl);
 }
 app.use(cors({
   origin: (origin, callback) => {
+    // Non-browser / same-process clients often omit Origin.
     if (!origin) return callback(null, true);
     if (process.env.NODE_ENV !== 'production') return callback(null, true);
+    // If no allowlist was configured, permit all origins rather than 500ing.
+    // Set ALLOWED_ORIGINS to a comma-separated list to lock this down later.
     if (allowedOrigins.length === 0) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Reject without throwing — callback(Error) becomes an unhandled 500 HTML page
+    // and breaks the login UI with a generic "Could not join" message.
     return callback(null, false);
   },
   methods: ['GET', 'POST', 'OPTIONS'],
