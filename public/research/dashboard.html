@@ -111,7 +111,7 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html { -webkit-font-smoothing: antialiased; }
     body {
-      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-family: var(--font);
       background: var(--bg-primary);
       color: var(--text-primary);
       display: flex;
@@ -490,7 +490,7 @@
       letter-spacing: -0.02em;
     }
     .mono {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-family: var(--font-mono);
       letter-spacing: 0;
     }
     .loading { opacity: 0.65; pointer-events: none; }
@@ -596,7 +596,7 @@
               <thead><tr>
                 <th>ID</th><th>Sessions</th><th>Projects</th><th>Drawings</th><th>Measurements</th>
                 <th>Simple</th><th>Pro</th><th>AI-assisted</th><th>Manual</th><th>Corrections</th>
-                <th>Avg time (s)</th><th>Last activity</th>
+                <th>Avg time (min)</th><th>Last activity</th>
               </tr></thead>
               <tbody id="tbodyParticipants"></tbody>
             </table></div>
@@ -633,7 +633,7 @@
             <div class="scroll"><table>
               <thead><tr>
                 <th>Session</th><th>Participant</th><th>Mode</th><th>Started</th><th>Ended</th>
-                <th>Duration (s)</th><th>Project</th><th>Drawing</th>
+                <th>Duration (min)</th><th>Project</th><th>Drawing</th>
               </tr></thead>
               <tbody id="tbodySessions"></tbody>
             </table></div>
@@ -660,7 +660,7 @@
             <div class="scroll"><table>
               <thead><tr>
                 <th>Record</th><th>Part.</th><th>Mode</th><th>Type</th><th>AI</th><th>User</th>
-                <th>Reference</th><th>Final</th><th>Δ%</th><th>Corr.</th><th>Time (s)</th><th>Date</th>
+                <th>Reference</th><th>Final</th><th>Δ%</th><th>Corr.</th><th>Time (min)</th><th>Date</th>
               </tr></thead>
               <tbody id="tbodyMeas"></tbody>
             </table></div>
@@ -806,6 +806,12 @@
     if (v == null || v === '' || !Number.isFinite(Number(v))) return null;
     return Number(v).toFixed(d != null ? d : 2);
   }
+  // Duration values are stored/returned in seconds; the dashboard always
+  // displays them in minutes for readability.
+  function secToMin(v, d) {
+    if (v == null || v === '' || !Number.isFinite(Number(v))) return null;
+    return (Number(v) / 60).toFixed(d != null ? d : 1);
+  }
   function headers() {
     const h = { 'Content-Type': 'application/json' };
     if (token) h['X-Research-Token'] = token;
@@ -944,7 +950,7 @@
       ['Corrections', s.correctedCount],
       ['Median error %', s.medianAbsPctErrorVsReference != null ? s.medianAbsPctErrorVsReference : (s.meanAbsPctErrorVsReference != null ? s.meanAbsPctErrorVsReference : 'N/A')],
       ['Mean error %', s.primaryMeanAbsPct != null ? s.primaryMeanAbsPct : 'N/A'],
-      ['Avg meas. time (s)', s.avgMeasurementDurationSec != null ? s.avgMeasurementDurationSec : 'N/A'],
+      ['Avg meas. time (min)', s.avgMeasurementDurationSec != null ? secToMin(s.avgMeasurementDurationSec) : 'N/A'],
       ['Simple / Pro', (s.simpleCount || 0) + ' / ' + (s.proCount || 0)],
     ];
     $('kpiGrid').innerHTML = items.map(([l, v]) =>
@@ -961,7 +967,7 @@
     answers.push('<strong>4. Human correction:</strong> ' + (s.correctedCount || 0) +
       ' corrected rows (' + (s.correctionRate || 0) + '% of measurements).');
     answers.push('<strong>5–6. Time:</strong> avg measurement duration ' +
-      (s.avgMeasurementDurationSec != null ? s.avgMeasurementDurationSec + ' s' : 'N/A') +
+      (s.avgMeasurementDurationSec != null ? secToMin(s.avgMeasurementDurationSec) + ' min' : 'N/A') +
       '. Time-saved % requires paired manual vs AI-assisted sessions on the same drawing.');
     answers.push('<strong>8. Simple vs Pro:</strong> ' + (s.simpleCount || 0) + ' Simple / ' +
       (s.proCount || 0) + ' Pro measurement rows.');
@@ -1041,7 +1047,7 @@
       '<td>' + esc(r.sessions) + '</td><td>' + esc(r.projects) + '</td><td>' + esc(r.drawings) + '</td>' +
       '<td>' + esc(r.measurements) + '</td><td>' + esc(r.simpleCount) + '</td><td>' + esc(r.proCount) + '</td>' +
       '<td>' + esc(r.aiAssisted) + '</td><td>' + esc(r.manual) + '</td><td>' + esc(r.corrections) + '</td>' +
-      '<td>' + na(numFmt(r.avgMeasurementDurationSec, 1)) + '</td>' +
+      '<td>' + na(secToMin(r.avgMeasurementDurationSec, 1)) + '</td>' +
       '<td class="mono">' + na(r.lastActivity && String(r.lastActivity).replace('T', ' ').slice(0, 19)) + '</td>' +
       '</tr>').join('') : '<tr><td colspan="12" class="empty">No participants yet</td></tr>';
     $('partCount').textContent = rows.length + ' participant(s)';
@@ -1080,7 +1086,7 @@
   function renderSessions() {
     const rows = cache.sessions || [];
     $('tbodySessions').innerHTML = rows.length ? rows.map(s => {
-      const dur = s.durationSec != null ? s.durationSec
+      const durSec = s.durationSec != null ? s.durationSec
         : (s.startedAt && s.endedAt
           ? Math.max(0, Math.round((new Date(s.endedAt) - new Date(s.startedAt)) / 1000))
           : null);
@@ -1090,7 +1096,7 @@
         '<td><span class="tag ' + (String(s.mode) === 'Pro' ? 'pro' : 'simple') + '">' + esc(s.mode) + '</span></td>' +
         '<td class="mono">' + esc((s.startedAt || '').replace('T', ' ').slice(0, 19)) + '</td>' +
         '<td class="mono">' + na(s.endedAt && String(s.endedAt).replace('T', ' ').slice(0, 19)) + '</td>' +
-        '<td>' + na(dur) + '</td>' +
+        '<td>' + na(secToMin(durSec, 1)) + '</td>' +
         '<td class="mono">' + na(s.projectId) + '</td>' +
         '<td class="mono">' + na(s.drawingId) + '</td></tr>';
     }).join('') : '<tr><td colspan="8" class="empty">No sessions</td></tr>';
@@ -1112,7 +1118,7 @@
         '<td class="mono">' + na(finalV) + '</td>' +
         '<td class="mono">' + na(numFmt(m.differencePct, 2)) + '</td>' +
         '<td>' + (m.userCorrection ? '<span class="tag corr">Yes</span>' : '—') + '</td>' +
-        '<td>' + na(m.measurementDurationSec) + '</td>' +
+        '<td>' + na(secToMin(m.measurementDurationSec, 1)) + '</td>' +
         '<td class="mono">' + esc(m.date || (m.createdAt || '').slice(0, 10)) + '</td></tr>';
     }).join('') : '<tr><td colspan="12" class="empty">No measurement records</td></tr>';
     $('measCount').textContent = rows.length + ' record(s) shown';
@@ -1193,7 +1199,7 @@
       return '<div class="card"><h3>' + esc(title) + '</h3>' +
         '<div class="kpi-grid">' +
         [['Participants', m.participants], ['Sessions', m.sessions], ['Measurements', m.measurements],
-         ['Avg duration (s)', m.avgDurationSec != null ? m.avgDurationSec : 'N/A'],
+         ['Avg duration (min)', m.avgDurationSec != null ? secToMin(m.avgDurationSec) : 'N/A'],
          ['Corrections', m.corrections], ['Correction %', m.correctionRate != null ? m.correctionRate : 'N/A'],
          ['AI-assisted', m.aiAssisted], ['AI-assisted %', m.aiAssistedRate != null ? m.aiAssistedRate : 'N/A']
         ].map(([l, v]) => '<div class="kpi"><div class="v">' + esc(v == null ? 0 : v) + '</div><div class="l">' + esc(l) + '</div></div>').join('') +
