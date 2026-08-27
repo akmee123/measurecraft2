@@ -860,13 +860,24 @@
     } catch (e) { toast(e.message); }
   });
   $('btnClearAll').addEventListener('click', async () => {
-    if (!confirm('Delete ALL research data (measurements, sessions, events)? This cannot be undone.')) return;
+    if (!confirm('Delete ALL research data (measurements, sessions, events, bindings)? This cannot be undone.')) return;
     if (!confirm('Final confirmation: clear entire research dataset?')) return;
+    const keepDrawings = confirm('Keep uploaded drawing files on disk/S3?\n\nOK = keep drawings\nCancel = delete drawings too');
     try {
-      await api('/api/research/clear-all', { method: 'POST', body: '{}' });
-      toast('Research data cleared');
+      const result = await api('/api/research/clear-all', {
+        method: 'POST',
+        body: JSON.stringify({
+          confirm: 'DELETE_ALL_RESEARCH_DATA',
+          keepDrawings: !!keepDrawings,
+        }),
+      });
+      if (result && result.success) {
+        toast('All research data cleared');
+      } else {
+        toast((result && result.error) || 'Clear failed');
+      }
       await loadAll();
-    } catch (e) { toast(e.message); }
+    } catch (e) { toast(e.message || 'Clear failed'); }
   });
 
   // Auto-unlock if token already stored
