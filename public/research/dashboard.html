@@ -111,7 +111,7 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html { -webkit-font-smoothing: antialiased; }
     body {
-      font-family: var(--font);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       background: var(--bg-primary);
       color: var(--text-primary);
       display: flex;
@@ -476,6 +476,23 @@
       padding: 0;
     }
     .icon-btn:hover { background: var(--bg-hover); border-color: var(--accent); }
+    /* Typography: cleaner letterforms and more consistent hierarchy */
+    body {
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      text-rendering: optimizeLegibility;
+      letter-spacing: -0.005em;
+    }
+    h1, h2, h3, h4, button, input, select, textarea, .nav-btn, .badge {
+      font-family: inherit;
+    }
+    h1, h2, h3, h4 {
+      letter-spacing: -0.02em;
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      letter-spacing: 0;
+    }
     .loading { opacity: 0.65; pointer-events: none; }
     .status-line { min-height: 18px; margin-top: 8px; font-size: 12px; }
     .status-line.ok { color: var(--success); }
