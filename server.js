@@ -28,13 +28,19 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map((value) => value.trim()).filter(Boolean);
+const renderExternalUrl = (process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
+if (renderExternalUrl && !allowedOrigins.includes(renderExternalUrl)) {
+  allowedOrigins.push(renderExternalUrl);
+}
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || process.env.NODE_ENV !== 'production') return callback(null, true);
+    if (!origin) return callback(null, true);
+    if (process.env.NODE_ENV !== 'production') return callback(null, true);
+    if (allowedOrigins.length === 0) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error('Origin not allowed'));
+    return callback(null, false);
   },
-  methods: ['GET', 'POST'],
+  methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-MC-Token', 'X-Research-Token'],
 }));
 app.use((req, res, next) => {
