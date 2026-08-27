@@ -124,11 +124,17 @@
                             btnJoinEmail.classList.remove('loading');
                             return;
                         }
-                        showError((data && data.error) || 'Could not join. Try again.');
+                        if (resp.status >= 500) {
+                            showError('Server error while joining. If this persists after redeploy, check Render logs for CORS or research storage errors.');
+                        } else {
+                            showError((data && data.error) || ('Could not join (HTTP ' + resp.status + '). Try again.'));
+                        }
                         btnJoinEmail.disabled = false;
                         btnJoinEmail.classList.remove('loading');
                         return;
-                    } catch (_) {
+                    } catch (err) {
+                        // Network / offline fallback so local demos still work.
+                        console.warn('email-join network error, using offline session', err);
                         saveSession({
                             email: email,
                             name: email.split('@')[0] || 'User',
