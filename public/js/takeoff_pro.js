@@ -2143,15 +2143,24 @@
             }
             researchQuantitySyncInFlight = true;
             try {
-                const currentRows = computeQuantities();
                 const ids = MCResearch.getResearchIds ? MCResearch.getResearchIds() : {};
+                // Without a registered drawing, supersede cannot match prior rows and
+                // zero aggregate lines (Plastering/Tiling/Painting) flood the dashboard.
+                if (!ids.drawingId) {
+                    return;
+                }
+                const currentRows = computeQuantities();
                 const cf = calibrationFactor;
                 const materialRows = currentRows.map(function (row) {
                     const el = row.elementId != null ? elements.find(function (item) { return item.id === row.elementId; }) : null;
                     const qty = Number(row.qty);
                     if (!Number.isFinite(qty)) return null;
+                    // Skip empty aggregate rollups (always emitted even with no walls/slabs)
+                    if (row.isAggregate && Math.abs(qty) < 1e-9) return null;
+                    // Skip zero per-element rows unless they carry AI/reference for comparison
                     const aiQty = el && Number.isFinite(Number(el.aiQty)) ? Number(el.aiQty) : null;
                     const referenceQty = el && Number.isFinite(Number(el.referenceQty)) ? Number(el.referenceQty) : null;
+                    if (Math.abs(qty) < 1e-9 && aiQty == null && referenceQty == null) return null;
                     const sourceNote = row.remarks ? String(row.remarks) : 'Live quantity from the current reviewed geometry';
                     const context = 'Live Pro quantity · ' + (ids.projectId || 'project') + ' · ' + (ids.drawingId || 'drawing');
                     return {
@@ -2180,6 +2189,7 @@
                 }).map(function (el) {
                     const live = computeAiBaselineQty(el, cf);
                     if (!live) return null;
+                    if (!(Number.isFinite(live.qty) && Math.abs(live.qty) > 1e-9)) return null;
                     const aiQty = Number.isFinite(Number(el.aiQty)) ? Number(el.aiQty) : null;
                     const referenceQty = Number.isFinite(Number(el.referenceQty)) ? Number(el.referenceQty) : null;
                     return {
@@ -2199,6 +2209,8 @@
                 if (rows.length) {
                     await MCResearch.logMeasurements(rows, {
                         mode: 'pro',
+                        projectId: ids.projectId || null,
+                        drawingId: ids.drawingId || null,
                         notes: 'Live Pro quantity refresh · ' + (ids.projectId || 'project') + ' · ' + (ids.drawingId || 'drawing')
                     });
                 }
@@ -7464,10 +7476,11 @@
                 // Live Quantities table shows face area (Gross/Deduction/Net in m²).
                 // Brick/block *counts* (Nos) belong only in the material BOQ estimate,
                 // not in this per-wall area table — unit must be m² here.
+                // qty must be net face area (m²), never the brick/block Nos from wallQtyForMaterial.
                 rows.push({
                     material: matName,
                     element: w.label,
-                    qty: q.qty,
+                    qty: Math.round(netArea * 100) / 100,
                     gross: gross.toFixed(2),
                     cutout: deduction.toFixed(2),
                     net: netArea.toFixed(2),
