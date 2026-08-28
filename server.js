@@ -16,7 +16,14 @@ let sharp = null;
 try {
   sharp = require('sharp');
 } catch (_) {
-  console.warn('[detect] sharp is unavailable; tiled mode will use logical full-image passes.');
+  console.warn('[detect] sharp is unavailable; tiled mode will use logical full-image passes and preprocessing will be skipped.');
+}
+
+let Tesseract = null;
+try {
+  Tesseract = require('tesseract.js');
+} catch (_) {
+  // Optional — OCR scale/label assist is skipped when not installed
 }
 
 const app = express();
@@ -216,36 +223,106 @@ function parseJsonLoose(text) {
 
 const DETECT_TYPES = new Set(['wall', 'column', 'slab', 'beam', 'door', 'window']);
 
-function normalizeDetectedElements(rawElements, pixelW, pixelH) {
+function normalizeDetectedElements(rawElements, pixelW, pixelH, options = {}) {
   const source = Array.isArray(rawElements) ? rawElements : [];
   const maxW = Number(pixelW) > 0 ? Number(pixelW) : null;
   const maxH = Number(pixelH) > 0 ? Number(pixelH) : null;
+  const imgArea = (maxW && maxH) ? maxW * maxH : null;
+  const minDim = (maxW && maxH) ? Math.min(maxW, maxH) : null;
   const normalized = [];
+  const rejected = { area: 0, aspect: 0, size: 0, geometry: 0 };
 
   for (const raw of source) {
     if (!raw || typeof raw !== 'object') continue;
     let type = String(raw.type || '').trim().toLowerCase();
     if (type === 'room' || type === 'area' || type === 'floor') type = 'slab';
     if (type === 'opening') type = 'window';
-    if (!DETECT_TYPES.has(type)) continue;
+    if (!DETECT_TYPES.has(type)) {
+      rejected.type += 1;
+      continue;
+    }
 
     const values = ['x', 'y', 'w', 'h'].map((key) => Number(raw[key]));
-    if (values.some((value) => !Number.isFinite(value))) continue;
+    if (values.some((value) => !Number.isFinite(value))) {
+      rejected.geometry += 1;
+      continue;
+    }
     let [x, y, w, h] = values;
-    if (w <= 1 || h <= 1) continue;
+    if (w <= 1 || h <= 1) {
+      rejected.geometry += 1;
+      continue;
+    }
     x = Math.max(0, x);
     y = Math.max(0, y);
     if (maxW != null) w = Math.min(w, Math.max(0, maxW - x));
     if (maxH != null) h = Math.min(h, Math.max(0, maxH - y));
-    if (w <= 1 || h <= 1) continue;
+    if (w <= 1 || h <= 1) {
+      rejected.geometry += 1;
+      continue;
+    }
+
+    const area = w * h;
+    const aspect = Math.max(w, h) / Math.max(1, Math.min(w, h)); // >= 1
+
+    // ---- Geometric sanity filters (C) ----
+    if (imgArea) {
+      // Absolute minimum area: ignore tiny noise / text boxes (≈ 0.002 % of sheet)
+      const minAreaFrac = type === 'column' || type === 'door' || type === 'window' ? 0.000008 : 0.00002;
+      if (area < imgArea * minAreaFrac) {
+        rejected.area += 1;
+        continue;
+      }
+      // Columns / openings should not be huge relative to the sheet
+      if ((type === 'column' || type === 'door' || type === 'window') && area > imgArea * 0.04) {
+        rejected.area += 1;
+        continue;
+      }
+    }
+
+    if (type === 'column') {
+      // True columns are roughly square-ish; long thin rectangles are walls/beams
+      if (aspect > 2.8) {
+        rejected.aspect += 1;
+        continue;
+      }
+      if (minDim && Math.max(w, h) > minDim * 0.22) {
+        // Column larger than ~22 % of the short sheet side is almost certainly a room/slab misclass
+        rejected.area += 1;
+        continue;
+      }
+    }
+
+    if (type === 'wall' || type === 'beam') {
+      // Walls/beams must be elongated; reject near-square boxes that are likely rooms or hatch
+      if (aspect < 2.2) {
+        rejected.aspect += 1;
+        continue;
+      }
+    }
+
+    if (type === 'door' || type === 'window') {
+      // Openings are small and moderately elongated
+      if (aspect > 8) {
+        rejected.aspect += 1;
+        continue;
+      }
+      if (minDim && Math.max(w, h) > minDim * 0.18) {
+        rejected.area += 1;
+        continue;
+      }
+    }
 
     let confidence = Number(raw.confidence);
     if (!Number.isFinite(confidence)) confidence = 0.5;
     if (confidence > 1) confidence /= 100;
     confidence = Math.max(0, Math.min(1, confidence));
 
+    // Slight confidence penalty for borderline aspect so QS review prioritises them
+    if (type === 'column' && aspect > 2.0) confidence *= 0.92;
+    if ((type === 'wall' || type === 'beam') && aspect < 3.0) confidence *= 0.9;
+
     const height = Number(raw.height);
-    normalized.push({
+    const item = {
       type,
       label: String(raw.label || type).trim().slice(0, 120) || type,
       x: Math.round(x * 100) / 100,
@@ -254,7 +331,10 @@ function normalizeDetectedElements(rawElements, pixelW, pixelH) {
       h: Math.round(h * 100) / 100,
       height: Number.isFinite(height) && height > 0 ? Math.round(height * 1000) / 1000 : null,
       confidence: Math.round(confidence * 1000) / 1000,
-    });
+    };
+    if (raw.ocrForced) item.ocrForced = true;
+    if (raw.ocrLabel) item.ocrLabel = raw.ocrLabel;
+    normalized.push(item);
   }
 
   normalized.sort((a, b) => b.confidence - a.confidence);
@@ -273,6 +353,10 @@ function normalizeDetectedElements(rawElements, pixelW, pixelH) {
     if (!duplicate) kept.push(item);
     if (kept.length >= 150) break;
   }
+
+  if (options.returnStats) {
+    return { elements: kept, rejected };
+  }
   return kept;
 }
 
@@ -281,6 +365,14 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     hasKey: Boolean(GEMINI_API_KEY),
     model: GEMINI_MODEL,
+    sharp: Boolean(sharp),
+    ocr: Boolean(Tesseract),
+    features: {
+      preprocess: Boolean(sharp),
+      realTileCrop: Boolean(sharp),
+      ocrAssist: Boolean(Tesseract),
+      geometricFilters: true,
+    },
   });
 });
 
@@ -342,17 +434,62 @@ function buildDetectPrompt(passType, w, h, legend, tileNote) {
 /**
  * Call Gemini once with the given prompt + image(s).
  */
-async function cropImageToTile(imageBase64, left, top, width, height) {
+/**
+ * Mild high-contrast + sharpen preprocessing for better line / hatch visibility.
+ * Keeps colour (Gemini benefits from colour legends) but normalises contrast
+ * and applies a light unsharp mask. Returns original data if sharp is missing
+ * or preprocessing is disabled.
+ */
+async function preprocessForDetection(imageBase64, mime, options = {}) {
+  if (!sharp || options.disablePreprocess) {
+    return { data: imageBase64, mimeType: mime || 'image/jpeg', preprocessed: false };
+  }
+  try {
+    const input = Buffer.from(imageBase64, 'base64');
+    let pipeline = sharp(input).rotate(); // honour EXIF orientation
+
+    // Normalise contrast and mild sharpen — helps thin walls / dashed lines
+    // without destroying hatch patterns or colour legend swatches.
+    pipeline = pipeline
+      .normalize()
+      .modulate({ brightness: 1.02, saturation: 1.05 })
+      .sharpen({ sigma: 0.8, m1: 0.6, m2: 0.3 });
+
+    // Prefer JPEG for Gemini size limits; keep PNG if source was PNG and small
+    const usePng = (mime || '').includes('png') && imageBase64.length < 4 * 1024 * 1024;
+    const output = usePng
+      ? await pipeline.png({ compressionLevel: 6 }).toBuffer()
+      : await pipeline.jpeg({ quality: 92, mozjpeg: true }).toBuffer();
+
+    return {
+      data: output.toString('base64'),
+      mimeType: usePng ? 'image/png' : 'image/jpeg',
+      preprocessed: true,
+    };
+  } catch (err) {
+    console.warn('[preprocess] failed, using original image:', err.message);
+    return { data: imageBase64, mimeType: mime || 'image/jpeg', preprocessed: false };
+  }
+}
+
+async function cropImageToTile(imageBase64, left, top, width, height, options = {}) {
   if (!sharp) return null;
   const input = Buffer.from(imageBase64, 'base64');
   const clippedLeft = Math.max(0, Math.floor(left));
   const clippedTop = Math.max(0, Math.floor(top));
   const clippedWidth = Math.max(1, Math.floor(width));
   const clippedHeight = Math.max(1, Math.floor(height));
-  const output = await sharp(input)
-    .extract({ left: clippedLeft, top: clippedTop, width: clippedWidth, height: clippedHeight })
-    .jpeg({ quality: 92 })
-    .toBuffer();
+  let pipeline = sharp(input)
+    .extract({ left: clippedLeft, top: clippedTop, width: clippedWidth, height: clippedHeight });
+
+  if (!options.disablePreprocess) {
+    pipeline = pipeline
+      .normalize()
+      .modulate({ brightness: 1.02, saturation: 1.05 })
+      .sharpen({ sigma: 0.8, m1: 0.6, m2: 0.3 });
+  }
+
+  const output = await pipeline.jpeg({ quality: 92, mozjpeg: true }).toBuffer();
   return {
     data: output.toString('base64'),
     mimeType: 'image/jpeg',
@@ -361,6 +498,161 @@ async function cropImageToTile(imageBase64, left, top, width, height) {
     width: clippedWidth,
     height: clippedHeight,
   };
+}
+
+/**
+ * Lightweight OCR assist (tesseract.js optional).
+ * Returns { scaleRatio, scaleText, labels: [{text, x, y, w, h, conf}] }
+ * Used to inject scale hints into the prompt and to hard-correct element types.
+ */
+async function runOcrAssist(imageBase64, pixelW, pixelH) {
+  if (!Tesseract || !imageBase64) {
+    return { scaleRatio: null, scaleText: null, labels: [], ocrUsed: false };
+  }
+  try {
+    // Downscale large images for speed — OCR does not need full detection resolution
+    let ocrBuffer = Buffer.from(imageBase64, 'base64');
+    let scaleFactor = 1;
+    if (sharp && pixelW > 1800) {
+      scaleFactor = 1600 / Math.max(pixelW, pixelH);
+      ocrBuffer = await sharp(ocrBuffer)
+        .resize({ width: Math.round(pixelW * scaleFactor), height: Math.round(pixelH * scaleFactor), fit: 'inside' })
+        .grayscale()
+        .normalize()
+        .png()
+        .toBuffer();
+    }
+
+    const result = await Tesseract.recognize(ocrBuffer, 'eng', {
+      logger: () => {},
+    });
+
+    const labels = [];
+    const words = (result.data && result.data.words) || [];
+    for (const word of words) {
+      const t = (word.text || '').trim();
+      if (!t || t.length < 1 || t.length > 24) continue;
+      const conf = Number(word.confidence) || 0;
+      if (conf < 40) continue;
+      const bbox = word.bbox || {};
+      // Map back to original pixel coordinates
+      const x = (bbox.x0 || 0) / scaleFactor;
+      const y = (bbox.y0 || 0) / scaleFactor;
+      const w = ((bbox.x1 || 0) - (bbox.x0 || 0)) / scaleFactor;
+      const h = ((bbox.y1 || 0) - (bbox.y0 || 0)) / scaleFactor;
+      labels.push({
+        text: t,
+        x: Math.round(x),
+        y: Math.round(y),
+        w: Math.round(w),
+        h: Math.round(h),
+        conf: Math.round(conf),
+      });
+    }
+
+    // Scale detection: look for classic patterns 1:50, 1:100, 1/100, SCALE 1:75 etc.
+    const fullText = (result.data && result.data.text) || '';
+    let scaleRatio = null;
+    let scaleText = null;
+    const scalePatterns = [
+      /(?:scale|sc\.?)\s*[:=]?\s*1\s*[:/]\s*(\d{2,4})/i,
+      /\b1\s*[:/]\s*(\d{2,4})\b/,
+      /(?:scale|sc\.?)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*mm\s*=\s*(\d+(?:\.\d+)?)\s*m/i,
+    ];
+    for (const re of scalePatterns) {
+      const m = fullText.match(re);
+      if (m) {
+        if (m[2]) {
+          // mm = m form → ratio = (mm real) / (m drawing * 1000)
+          const mm = parseFloat(m[1]);
+          const metres = parseFloat(m[2]);
+          if (mm > 0 && metres > 0) {
+            scaleRatio = (metres * 1000) / mm; // drawing units per real mm → classic 1:N
+            scaleText = m[0].trim();
+            break;
+          }
+        } else if (m[1]) {
+          const n = parseInt(m[1], 10);
+          if (n >= 20 && n <= 5000) {
+            scaleRatio = n;
+            scaleText = m[0].trim();
+            break;
+          }
+        }
+      }
+    }
+
+    return {
+      scaleRatio,
+      scaleText,
+      labels: labels.slice(0, 120),
+      ocrUsed: true,
+      fullTextSnippet: fullText.slice(0, 400),
+    };
+  } catch (err) {
+    console.warn('[ocr] assist failed:', err.message);
+    return { scaleRatio: null, scaleText: null, labels: [], ocrUsed: false, error: err.message };
+  }
+}
+
+/**
+ * Map OCR labels that fall inside (or very near) a detection box to force
+ * or boost the element type. Classic column marks: C1, COL, COL1, etc.
+ */
+function applyOcrLabelCorrections(elements, ocrLabels) {
+  if (!Array.isArray(elements) || !Array.isArray(ocrLabels) || !ocrLabels.length) {
+    return elements;
+  }
+  const columnHints = /^(c|col|column|stanchion|pier)[\s\-_]?\d*[a-z]?$/i;
+  const slabHints = /^(s|sl|slab|fl|floor|rm|room)[\s\-_]?\d*[a-z]?$/i;
+  const beamHints = /^(b|bm|beam)[\s\-_]?\d*[a-z]?$/i;
+  const doorHints = /^(d|dr|door)[\s\-_]?\d*[a-z]?$/i;
+  const windowHints = /^(w|win|wdw|window)[\s\-_]?\d*[a-z]?$/i;
+
+  return elements.map((el) => {
+    const cx = el.x + el.w / 2;
+    const cy = el.y + el.h / 2;
+    let best = null;
+    for (const lab of ocrLabels) {
+      const lx = lab.x + lab.w / 2;
+      const ly = lab.y + lab.h / 2;
+      // Centre of text inside or near the box (expand box slightly)
+      const margin = Math.max(8, Math.min(el.w, el.h) * 0.25);
+      if (
+        lx >= el.x - margin &&
+        lx <= el.x + el.w + margin &&
+        ly >= el.y - margin &&
+        ly <= el.y + el.h + margin
+      ) {
+        if (!best || lab.conf > best.conf) best = lab;
+      }
+    }
+    if (!best) return el;
+
+    const t = best.text.trim();
+    let forcedType = null;
+    if (columnHints.test(t)) forcedType = 'column';
+    else if (slabHints.test(t)) forcedType = 'slab';
+    else if (beamHints.test(t)) forcedType = 'beam';
+    else if (doorHints.test(t)) forcedType = 'door';
+    else if (windowHints.test(t)) forcedType = 'window';
+
+    if (forcedType && forcedType !== el.type) {
+      return {
+        ...el,
+        type: forcedType,
+        label: t.slice(0, 40),
+        confidence: Math.min(1, (el.confidence || 0.5) + 0.15),
+        ocrForced: true,
+        ocrLabel: t,
+      };
+    }
+    // Same type — just attach a cleaner label if the existing one is generic
+    if (forcedType && (!el.label || el.label === el.type)) {
+      return { ...el, label: t.slice(0, 40), ocrLabel: t };
+    }
+    return el;
+  });
 }
 
 async function runGeminiDetect(prompt, mime, imageBase64, legendImages) {
@@ -437,6 +729,8 @@ app.post('/api/detect-elements', rateLimitAi, requireApiToken, async (req, res) 
       mode,           // 'tiled' (default) | 'single'
       tile_grid,      // e.g. 2 → 2×2
       tile_overlap,   // 0.0–0.4
+      preprocess,     // true (default) | false — sharp high-contrast / sharpen
+      ocr_assist,     // true (default when tesseract available) | false
     } = req.body || {};
 
     if (!image_base64) {
@@ -492,6 +786,38 @@ app.post('/api/detect-elements', rateLimitAi, requireApiToken, async (req, res) 
           }))
       : [];
 
+    const disablePreprocess = preprocess === false || preprocess === 'false';
+    const wantOcr = ocr_assist !== false && ocr_assist !== 'false';
+
+    // ---- A) Preprocess full image (high-contrast + mild sharpen) ----
+    const pre = await preprocessForDetection(image_base64, mime, { disablePreprocess });
+    const workMime = pre.mimeType;
+    const workBase64 = pre.data;
+
+    // ---- B) OCR scale-bar / label assist (optional tesseract.js) ----
+    let ocrInfo = { scaleRatio: null, scaleText: null, labels: [], ocrUsed: false };
+    if (wantOcr && Tesseract) {
+      ocrInfo = await runOcrAssist(workBase64, w || 2000, h || 2000);
+    }
+
+    // Inject scale + a short list of high-confidence labels into the prompt
+    let enrichedLegend = legend;
+    if (ocrInfo.scaleText) {
+      enrichedLegend = (enrichedLegend ? enrichedLegend + '\n' : '') +
+        `OCR-detected scale annotation on the drawing: "${ocrInfo.scaleText}" (ratio 1:${ocrInfo.scaleRatio}). Use only as context; do not invent elements.`;
+    }
+    if (ocrInfo.labels && ocrInfo.labels.length) {
+      const sample = ocrInfo.labels
+        .filter((l) => l.conf >= 60)
+        .slice(0, 25)
+        .map((l) => l.text)
+        .join(', ');
+      if (sample) {
+        enrichedLegend = (enrichedLegend ? enrichedLegend + '\n' : '') +
+          `OCR-visible text fragments (may include element marks such as C1, S1, COL): ${sample}. Prefer classifying a box as column/slab/beam when a matching mark sits inside it.`;
+      }
+    }
+
     const detectMode = (mode === 'single') ? 'single' : 'tiled';
     const grid = Math.max(1, Math.min(3, Number(tile_grid) || 2)); // 1–3
     const overlap = Math.max(0, Math.min(0.35, Number(tile_overlap) || 0.2));
@@ -501,25 +827,20 @@ app.post('/api/detect-elements', rateLimitAi, requireApiToken, async (req, res) 
 
     if (detectMode === 'single' || !w || !h || grid === 1) {
       // Classic single-pass
-      const prompt = buildDetectPrompt('single', w, h, legend);
-      const raw = await runGeminiDetect(prompt, mime, image_base64, legendImages);
+      const prompt = buildDetectPrompt('single', w, h, enrichedLegend);
+      const raw = await runGeminiDetect(prompt, workMime, workBase64, legendImages);
       allRaw = raw;
-      passes.push({ type: 'single', count: raw.length });
+      passes.push({ type: 'single', count: raw.length, preprocessed: pre.preprocessed });
     } else {
       // ---- Coarse pass (full image, large elements) ----
-      const coarsePrompt = buildDetectPrompt('coarse', w, h, legend);
-      const coarseRaw = await runGeminiDetect(coarsePrompt, mime, image_base64, legendImages);
+      const coarsePrompt = buildDetectPrompt('coarse', w, h, enrichedLegend);
+      const coarseRaw = await runGeminiDetect(coarsePrompt, workMime, workBase64, legendImages);
       allRaw = allRaw.concat(coarseRaw);
-      passes.push({ type: 'coarse', count: coarseRaw.length });
+      passes.push({ type: 'coarse', count: coarseRaw.length, preprocessed: pre.preprocessed });
 
       // ---- Fine / tiled pass ----
-      // NOTE: True image cropping requires a canvas/image library (e.g. sharp).
-      // For this revision we still send the FULL image but constrain the prompt
-      // to a logical tile region and ask the model to only return boxes whose
-      // centre falls inside that region. This already improves small-object
-      // recall on dense drawings without adding a native dependency.
-      // When sharp (or similar) is added later, replace the prompt constraint
-      // with real cropped tiles for higher resolution.
+      // Prefer real pixel crops via sharp for higher effective resolution on small elements.
+      // When sharp is unavailable, fall back to full-image passes with a prompt constraint.
 
       const tileW = w / grid;
       const tileH = h / grid;
@@ -539,14 +860,14 @@ app.post('/api/detect-elements', rateLimitAi, requireApiToken, async (req, res) 
             `Detect only elements visible in this tile; do not detect legend samples, notes, or title blocks.`;
 
           try {
-            const tile = await cropImageToTile(imageBase64, x0, y0, x1 - x0, y1 - y0);
+            const tile = await cropImageToTile(workBase64, x0, y0, x1 - x0, y1 - y0, { disablePreprocess });
             const tileWActual = tile ? tile.width : w;
             const tileHActual = tile ? tile.height : h;
-            const finePrompt = buildDetectPrompt('fine', tileWActual, tileHActual, legend, tileNote);
+            const finePrompt = buildDetectPrompt('fine', tileWActual, tileHActual, enrichedLegend, tileNote);
             const tileRaw = await runGeminiDetect(
               finePrompt,
-              tile ? tile.mimeType : mime,
-              tile ? tile.data : imageBase64,
+              tile ? tile.mimeType : workMime,
+              tile ? tile.data : workBase64,
               legendImages
             );
             const mapped = tile
@@ -572,7 +893,13 @@ app.post('/api/detect-elements', rateLimitAi, requireApiToken, async (req, res) 
       }
     }
 
-    const elements = normalizeDetectedElements(allRaw, w, h);
+    // ---- C) Geometric sanity filters + OCR label hard-corrections ----
+    let elements = normalizeDetectedElements(allRaw, w, h);
+    elements = applyOcrLabelCorrections(elements, ocrInfo.labels || []);
+
+    // Re-run light NMS after OCR type changes (same type may now collide)
+    const afterOcr = normalizeDetectedElements(elements, w, h, { returnStats: true });
+    elements = afterOcr.elements || elements;
 
     res.json({
       success: true,
@@ -583,6 +910,9 @@ app.post('/api/detect-elements', rateLimitAi, requireApiToken, async (req, res) 
         warnings: quality.warnings,
         ok: true,
       },
+      scale: ocrInfo.scaleRatio
+        ? { ratio: ocrInfo.scaleRatio, text: ocrInfo.scaleText, source: 'ocr' }
+        : null,
       validation: {
         received: allRaw.length,
         legendGuidanceUsed: Boolean(legend) || legendImages.length > 0,
@@ -593,6 +923,10 @@ app.post('/api/detect-elements', rateLimitAi, requireApiToken, async (req, res) 
         passes,
         tileGrid: detectMode === 'tiled' ? grid : 1,
         tileOverlap: detectMode === 'tiled' ? overlap : 0,
+        preprocessed: pre.preprocessed,
+        ocrUsed: Boolean(ocrInfo.ocrUsed),
+        ocrLabels: (ocrInfo.labels || []).length,
+        geometricRejected: afterOcr.rejected || null,
       },
     });
   } catch (err) {
