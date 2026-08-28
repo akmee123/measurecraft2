@@ -899,6 +899,19 @@
             </div>
           </div>
           <div class="card">
+            <h3>YOLO dataset export</h3>
+            <p class="muted" style="font-size:12px;margin:0 0 12px;">
+              Runs <code>scripts/export-yolo.js</code> on the server and returns a summary.
+              On free Render this is often unreliable (disk / time limits). Prefer downloading
+              <strong>Annotation export</strong> or <strong>AI training export</strong> and building the YOLO dataset locally:
+              <code>node scripts/export-yolo.js --out ./yolo-dataset</code>
+            </p>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+              <button type="button" class="secondary" id="btnYolo">Run YOLO export (server)</button>
+              <span class="muted" id="yoloStatus" style="font-size:12px;"></span>
+            </div>
+          </div>
+          <div class="card">
             <h3>Data management</h3>
             <p class="muted" style="font-size:12px;margin:0 0 12px;">Destructive actions require confirmation. Historical IDs are never silently rewritten.</p>
             <button type="button" class="danger" id="btnClearAll">Clear all research data…</button>
@@ -1704,6 +1717,36 @@
       downloadBlob(await res.blob(), 'measurecraft-annotations.json');
       toast('Annotation export downloaded');
     } catch (e) { toast(e.message, 'error'); }
+  });
+  $('btnYolo').addEventListener('click', async () => {
+    const statusEl = $('yoloStatus');
+    const btn = $('btnYolo');
+    if (btn) btn.disabled = true;
+    if (statusEl) statusEl.textContent = 'Running on server (up to ~2 min)…';
+    try {
+      const res = await fetch('/api/research/yolo-export', {
+        method: 'POST',
+        headers: headers(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || data.stderr || ('YOLO export failed (HTTP ' + res.status + ')'));
+      }
+      const n = (data.manifest && (data.manifest.images || data.manifest.count)) || null;
+      const msg = n != null
+        ? ('YOLO export OK — ' + n + ' image(s). Out: ' + (data.outDir || 'server data/yolo-export'))
+        : ('YOLO export finished. Out: ' + (data.outDir || 'server data/yolo-export'));
+      if (statusEl) statusEl.textContent = msg;
+      toast(msg);
+      if (data.stdout) console.log('[yolo-export stdout]', data.stdout);
+      if (data.stderr) console.warn('[yolo-export stderr]', data.stderr);
+    } catch (e) {
+      const errMsg = e.message || 'YOLO export failed';
+      if (statusEl) statusEl.textContent = errMsg;
+      toast(errMsg, 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   });
   $('btnClearAll').addEventListener('click', async () => {
     if (!confirm('Delete ALL research data (measurements, sessions, events, bindings)? This cannot be undone.')) return;
