@@ -918,21 +918,22 @@ function createProRevision({ parentProjectId, participantId, sessionId, projectN
 /**
  * Mark previous measurements for same participant + drawing + mode + type as superseded
  * so re-exports only keep the latest set.
+ * When drawingId is missing, fall back to sessionId so live-sync without a registered
+ * drawing does not accumulate unbounded duplicate zero rows.
  */
-function supersedePriorMeasurements({ participantId, drawingId, measurementMode, measurementType }) {
-  if (!participantId || !drawingId) return;
+function supersedePriorMeasurements({ participantId, drawingId, sessionId, measurementMode, measurementType }) {
+  if (!participantId) return;
+  if (!drawingId && !sessionId) return;
   const pid = sanitizeParticipant(participantId);
   const mode = measurementMode === 'Pro' ? 'Pro' : 'Simple';
   const rows = readJsonl(FILES.measurements);
   let changed = false;
   const updated = rows.map((r) => {
-    if (
-      r.participantId === pid &&
-      r.drawingId === drawingId &&
-      r.measurementMode === mode &&
-      (!measurementType || r.measurementType === measurementType) &&
-      !r.superseded
-    ) {
+    if (r.participantId !== pid || r.measurementMode !== mode || r.superseded) return r;
+    if (measurementType && r.measurementType !== measurementType) return r;
+    const matchDrawing = drawingId && r.drawingId === drawingId;
+    const matchSession = !drawingId && sessionId && r.sessionId === sessionId;
+    if (matchDrawing || matchSession) {
       changed = true;
       return { ...r, superseded: true, supersededAt: nowIso() };
     }
@@ -957,6 +958,7 @@ function logMeasurement(payload) {
     supersedePriorMeasurements({
       participantId: payload.participantId,
       drawingId: payload.drawingId,
+      sessionId: payload.sessionId,
       measurementMode: payload.measurementMode === 'Pro' || payload.mode === 'pro' ? 'Pro' : 'Simple',
       measurementType: payload.measurementType || payload.elementType,
     });
@@ -1064,11 +1066,12 @@ function logMeasurement(payload) {
  */
 function logMeasurementBatch(items, common) {
   const results = [];
-  // Supersede all prior rows for this drawing+mode once, then write new batch
-  if (common && common.participantId && common.drawingId) {
+  // Supersede all prior rows for this drawing+mode (or session+mode) once, then write new batch
+  if (common && common.participantId && (common.drawingId || common.sessionId)) {
     supersedePriorMeasurements({
       participantId: common.participantId,
       drawingId: common.drawingId,
+      sessionId: common.sessionId,
       measurementMode: common.measurementMode === 'Pro' || common.mode === 'pro' ? 'Pro' : 'Simple',
       measurementType: null, // all types for this drawing+mode
     });
@@ -1201,10 +1204,27 @@ function enrichMeasurementRecord(row) {
 }
 
 function listMeasurements(filters = {}) {
+  const num = (v) => {
+    if (v == null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
   let rows = readJsonl(FILES.measurements).map(enrichMeasurementRecord);
   // Default: only latest (non-superseded) rows
   if (filters.includeSuperseded !== true && filters.includeSuperseded !== 'true') {
     rows = rows.filter((r) => !r.superseded);
+  }
+  // Default: drop empty noise (zero final/user with no AI/reference) so dashboard
+  // counts are not inflated by live aggregate rollups with no geometry yet.
+  if (filters.includeEmpty !== true && filters.includeEmpty !== 'true') {
+    rows = rows.filter((r) => {
+      const finalV = num(r.finalAcceptedMeasurement != null ? r.finalAcceptedMeasurement : r.userMeasurement);
+      const ai = num(r.aiMeasurement);
+      const ref = num(r.referenceMeasurement);
+      if (ai != null || ref != null) return true;
+      if (finalV != null && Math.abs(finalV) > 1e-9) return true;
+      return false;
+    });
   }
   if (filters.participantId) {
     const p = sanitizeParticipant(filters.participantId);
@@ -1308,17 +1328,28 @@ function _round2(n) {
  * Reports median (robust to outliers) so unit-mismatch rows cannot produce 3000% means.
  */
 function summaryStats() {
-  const measurements = readJsonl(FILES.measurements).filter((m) => !m.superseded).map(enrichMeasurementRecord);
-  const projects = readJsonl(FILES.projects).filter((p) => !p.superseded);
-  const sessions = readJsonl(FILES.sessions);
-  const participants = new Set(measurements.map((m) => m.participantId).filter(Boolean));
-  const corrected = measurements.filter((m) => m.userCorrection).length;
-
   const num = (v) => {
     if (v == null || v === '') return null;
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   };
+  // Drop superseded and empty noise rows (zero final/user with no AI/reference baseline).
+  // Those come from live aggregate rollups (Plastering/Tiling/Painting) when no elements exist.
+  const measurements = readJsonl(FILES.measurements)
+    .filter((m) => !m.superseded)
+    .map(enrichMeasurementRecord)
+    .filter((m) => {
+      const finalV = num(m.finalAcceptedMeasurement != null ? m.finalAcceptedMeasurement : m.userMeasurement);
+      const ai = num(m.aiMeasurement);
+      const ref = num(m.referenceMeasurement);
+      if (ai != null || ref != null) return true;
+      if (finalV != null && Math.abs(finalV) > 1e-9) return true;
+      return false;
+    });
+  const projects = readJsonl(FILES.projects).filter((p) => !p.superseded);
+  const sessions = readJsonl(FILES.sessions);
+  const participants = new Set(measurements.map((m) => m.participantId).filter(Boolean));
+  const corrected = measurements.filter((m) => m.userCorrection).length;
 
   const vsRefAbs = [];
   const vsAiAbs = [];
