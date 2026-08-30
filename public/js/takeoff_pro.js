@@ -555,8 +555,9 @@
                 // Simple Mode’s material quantities use gross wall face area;
                 // openings are reported separately and do not alter this total.
                 wallFaceM2 += gross;
-                // Thickness is stored in metres — never derive from thicknessDraw/pixels
-                let thkM = (typeof w.thickness === 'number' && w.thickness >= 0.08 && w.thickness <= 0.55)
+                // Thickness is stored in metres — never derive from thicknessDraw/pixels.
+                // Use current value whenever positive so Properties edits always reflow totals.
+                let thkM = (typeof w.thickness === 'number' && isFinite(w.thickness) && w.thickness > 0)
                     ? w.thickness : DEFAULT_WALL_THICKNESS_M;
                 wallVolM3 += lengthM * thkM * heightM;
             });
@@ -567,20 +568,20 @@
                 // material quantities between modes (irregular slabs used to drift).
                 return (Number(el.w) || 0) * (Number(el.h) || 0) * cf * cf;
             }
-            // BOQ / material estimate must match Simple Mode: gross plan area × height.
+            // BOQ / material estimate: always use current element dimensions.
             // Opening deductions stay in the live quantity table only — not in BOQ totals.
-            // Slab thickness: only accept realistic structural values (80–400 mm).
-            // Values like 1.0 m or 3.0 m are common import/AI mistakes and would
-            // make Slab m³ ≈ floor area m² (the bug seen in Simple vs Pro BOQ).
+            // User edits to Thickness / Height / Depth must flow into totals immediately.
+            // (AI import may still write bad heights; QS can correct them in Properties.)
             function slabThicknessM(el, defaultH) {
-                const h = (el && typeof el.zHeight === 'number' && el.zHeight > 0) ? el.zHeight : defaultH;
-                if (h >= 0.08 && h <= 0.40) return h;
+                if (el && typeof el.zHeight === 'number' && isFinite(el.zHeight) && el.zHeight > 0) {
+                    return el.zHeight;
+                }
                 return defaultH;
             }
             function columnHeightM(el, defaultH) {
-                const h = (el && typeof el.zHeight === 'number' && el.zHeight > 0) ? el.zHeight : defaultH;
-                // Columns are storey-height scale
-                if (h >= 1.5 && h <= 6.0) return h;
+                if (el && typeof el.zHeight === 'number' && isFinite(el.zHeight) && el.zHeight > 0) {
+                    return el.zHeight;
+                }
                 return defaultH;
             }
             function slabColVol(el, defaultH, kind) {
@@ -3475,10 +3476,8 @@
                     }
                     const areaM2 = planAreaDraw * cf * cf;
                     let thkOrH = el.zHeight;
-                    if (el.type === 'slab') {
-                        if (!(typeof thkOrH === 'number' && thkOrH >= 0.08 && thkOrH <= 0.40)) thkOrH = 0.15;
-                    } else if (!(typeof thkOrH === 'number' && thkOrH > 0)) {
-                        thkOrH = 3.0;
+                    if (typeof thkOrH !== 'number' || !isFinite(thkOrH) || thkOrH <= 0) {
+                        thkOrH = (el.type === 'slab') ? 0.15 : 3.0;
                     }
                     const vol = areaM2 * thkOrH;
                     return { qty: Math.round(vol * 1000) / 1000, unit: 'm³' };
