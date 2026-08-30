@@ -543,6 +543,9 @@
                 return el.accepted !== false;
             };
             const wallHeightDefault = 3.0;
+            // Floor finish adjustment accumulators — see SKIRTING_HEIGHT_M above.
+            let wallFootprintTotalM2 = 0;
+            let wallLengthTotalM = 0;
             walls.forEach(w => {
                 if (!accepted(w)) return;
                 const isLine = !!(w.isLine && w.p1 && w.p2);
@@ -552,6 +555,15 @@
                 const lengthM = lenDraw * cf;
                 const heightM = (w.zHeight != null && w.zHeight > 0) ? w.zHeight : wallHeightDefault;
                 const gross = lengthM * heightM;
+                {
+                    // Wall plan footprint (length × thickness) — deducted from slab area
+                    // to get the actual tileable floor area, and wall length is used
+                    // for the skirting-area addition below.
+                    const fpThkM = (typeof w.thickness === 'number' && isFinite(w.thickness) && w.thickness > 0)
+                        ? w.thickness : DEFAULT_WALL_THICKNESS_M;
+                    wallFootprintTotalM2 += lengthM * fpThkM;
+                    wallLengthTotalM += lengthM;
+                }
                 // Deduct openings / cutouts / columns (same engine as Live Quantities)
                 let deductionM2 = 0;
                 try {
@@ -686,7 +698,14 @@
             const concreteVol = slabVol + colVol + beamVol;
             const conc = concreteBreakdown(concreteVol);
             const plas = plasterBreakdown(wallFaceM2);
-            const tiles = tileCount(slabArea);
+            // Floor finish (tile) area ≠ slab area:
+            //   slab area includes the footprint of walls sitting on it, so that
+            //   footprint must be deducted to get the exposed floor to be tiled;
+            //   then a skirting strip (wall length × SKIRTING_HEIGHT_M) is added
+            //   back, since skirting is also tiled material.
+            const skirtingAreaM2 = wallLengthTotalM * SKIRTING_HEIGHT_M;
+            const floorFinishAreaM2 = Math.max(0, slabArea - wallFootprintTotalM2) + skirtingAreaM2;
+            const tiles = tileCount(floorFinishAreaM2);
             const paint = paintLitres(wallFaceM2);
             // Split wall faces: brick 100/225 vs block 100/150/200 (Sri Lankan Material List §08/§09)
             const brickFace = { 100: 0, 225: 0 };
@@ -811,7 +830,7 @@
                     qty: Math.round((tiles.adhesiveBags || 0) * 100) / 100,
                     unit: 'bag (25kg)',
                     price: rate('Adhesive'),
-                    source: 'Tiling area ' + slabArea.toFixed(2) + ' m² × rate',
+                    source: 'Floor finish area ' + floorFinishAreaM2.toFixed(2) + ' m² × rate',
                     color: '#64748b'
                 },
                 {
@@ -819,7 +838,9 @@
                     qty: tiles.count || 0,
                     unit: 'Nr',
                     price: rate('Tiles (600x600mm)'),
-                    source: 'Slab floor area ' + slabArea.toFixed(2) + ' m² + 5% waste',
+                    source: 'Floor finish ' + floorFinishAreaM2.toFixed(2) + ' m² (Slab ' + slabArea.toFixed(2)
+                        + ' − Wall footprint ' + wallFootprintTotalM2.toFixed(2)
+                        + ' + Skirting ' + skirtingAreaM2.toFixed(2) + ') + 5% waste',
                     color: '#b8c8d4'
                 },
                 {
@@ -858,7 +879,8 @@
                 { element: 'Slab', qty: Math.round(slabVol * 1000) / 1000, unit: 'm³' },
                 { element: 'Wall', qty: Math.round(wallFaceM2 * 100) / 100, unit: 'm²' },
                 { element: 'Wall (volume)', qty: Math.round(wallVolM3 * 1000) / 1000, unit: 'm³' },
-                { element: 'Floor / tiling area', qty: Math.round(slabArea * 100) / 100, unit: 'm²' },
+                { element: 'Floor / tiling area', qty: Math.round(floorFinishAreaM2 * 100) / 100, unit: 'm²' },
+                { element: 'Skirting area', qty: Math.round(skirtingAreaM2 * 100) / 100, unit: 'm²' },
                 { element: 'Doors', qty: doorCount, unit: 'Nr' },
                 { element: 'Windows', qty: windowCount, unit: 'Nr' },
                 { element: 'Openings (other)', qty: openingCount, unit: 'Nr' },
@@ -878,7 +900,8 @@
                 grandTotal,
                 meta: {
                     concreteVol, wallFaceM2, slabArea, colVol, beamVol, slabVol, brickNos,
-                    cementBags, sandM3, aggM3
+                    cementBags, sandM3, aggM3,
+                    wallFootprintTotalM2, wallLengthTotalM, skirtingAreaM2, floorFinishAreaM2
                 }
             };
         }
@@ -955,6 +978,11 @@
         const DEFAULT_WALL_THICKNESS_M = 0.225;
         const DEFAULT_BEAM_THICKNESS_M = 0.20;
         const DEFAULT_SLAB_THICKNESS_M = 0.15;
+        // Floor finish (tile) adjustment: slab plan area includes the footprint of
+        // walls sitting on it, but tiling only covers the exposed floor between
+        // walls, plus a skirting strip run along the base of every wall.
+        // Skirting height assumption — adjust here if the QS spec differs.
+        const SKIRTING_HEIGHT_M = 0.10; // 100 mm skirting
         let elements = [];
         let selectedIds = [];
         let elementSearchQuery = '';
@@ -7600,6 +7628,9 @@
             let totalBrickVol = 0,
                 totalBrickQty = 0,
                 totalPlasterArea = 0;
+            // Floor finish adjustment accumulators — see SKIRTING_HEIGHT_M above.
+            let wallFootprintTotalM2 = 0;
+            let wallLengthTotalM = 0;
             function materialDisplayName(el, fallback) {
                 const m = el && el.material ? String(el.material).trim() : '';
                 return m || fallback;
@@ -7655,6 +7686,14 @@
                 const lengthM = lengthDraw * cf;
                 const heightM = (w.zHeight != null && w.zHeight > 0) ? w.zHeight : 3;
                 const gross = lengthM * heightM;
+                {
+                    // Wall plan footprint (length × thickness) — deducted from slab area
+                    // to get the tileable floor area; length feeds the skirting addition.
+                    const fpThkM = (typeof w.thickness === 'number' && w.thickness > 0)
+                        ? w.thickness : DEFAULT_WALL_THICKNESS_M;
+                    wallFootprintTotalM2 += lengthM * fpThkM;
+                    wallLengthTotalM += lengthM;
+                }
                 // Openings + columns occupying the wall (wall geometry kept intact)
                 const hits = collectWallDeductions(w);
                 let deduction = 0;
@@ -7763,9 +7802,14 @@
                 });
                 return { grossArea, netArea, netVol };
             }
-            let totalTileArea = 0;
+            let totalSlabNetArea = 0;
             slabs.forEach(s => { const r = processHorizontal(s, 'Concrete – Slab');
-                totalTileArea += r.netArea; });
+                totalSlabNetArea += r.netArea; });
+            // Floor finish (tile) area ≠ slab area: deduct the wall footprint sitting
+            // on the slab, then add the skirting strip (wall length × SKIRTING_HEIGHT_M),
+            // since skirting is tiled material too.
+            const skirtingAreaM2 = wallLengthTotalM * SKIRTING_HEIGHT_M;
+            const totalTileArea = Math.max(0, totalSlabNetArea - wallFootprintTotalM2) + skirtingAreaM2;
             columns.forEach(c => {
                 // Plan area: polygon area if vertices exist, else bounding box
                 let planAreaDraw;
@@ -7929,11 +7973,24 @@
                 element: 'Floor Areas (from Slabs)',
                 qty: tiles.count,
                 unit: 'Nos',
-                remarks: `${tiles.note} · Area ${totalTileArea.toFixed(2)} m² after slab deductions`,
+                remarks: `${tiles.note} · Floor finish ${totalTileArea.toFixed(2)} m² `
+                    + `(Slab ${totalSlabNetArea.toFixed(2)} − Wall footprint ${wallFootprintTotalM2.toFixed(2)} `
+                    + `+ Skirting ${skirtingAreaM2.toFixed(2)} @ ${(SKIRTING_HEIGHT_M * 1000).toFixed(0)}mm)`,
                 elementId: null,
                 elementLabel: 'Floor Areas',
                 isAggregate: true,
                 aggregateType: 'tile'
+            });
+            rows.push({
+                material: 'Skirting Tiling',
+                element: 'Wall Base (all walls)',
+                qty: skirtingAreaM2.toFixed(2),
+                unit: 'm²',
+                remarks: `Wall length ${wallLengthTotalM.toFixed(2)} m × ${(SKIRTING_HEIGHT_M * 1000).toFixed(0)} mm skirting height`,
+                elementId: null,
+                elementLabel: 'Skirting',
+                isAggregate: true,
+                aggregateType: 'skirting'
             });
             const paintInfo = paintLitres(totalPlasterArea);
             rows.push({
