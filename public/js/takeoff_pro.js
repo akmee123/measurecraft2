@@ -552,14 +552,36 @@
                 const lengthM = lenDraw * cf;
                 const heightM = (w.zHeight != null && w.zHeight > 0) ? w.zHeight : wallHeightDefault;
                 const gross = lengthM * heightM;
-                // Simple Mode’s material quantities use gross wall face area;
-                // openings are reported separately and do not alter this total.
-                wallFaceM2 += gross;
+                // Deduct openings / cutouts / columns (same engine as Live Quantities)
+                let deductionM2 = 0;
+                try {
+                    if (typeof collectWallDeductions === 'function') {
+                        const hits = collectWallDeductions(w) || [];
+                        hits.forEach(function (d) { deductionM2 += Number(d.deductM2) || 0; });
+                    } else {
+                        openingsAll.forEach(function (o) {
+                            if (o.parentId != null && typeof sameElementId === 'function' && !sameElementId(o.parentId, w.id)) return;
+                            if (o.parentId == null && typeof elementIntersectsWall === 'function' && !elementIntersectsWall(w, o)) return;
+                            if (o.parentId == null && typeof elementIntersectsWall !== 'function') return;
+                            let openWidthM;
+                            if (isLine && typeof cutoutWidthAlongLine === 'function') {
+                                const wd = cutoutWidthAlongLine(w, o);
+                                openWidthM = (wd > 1e-6 ? wd : Math.max(o.w || 0, o.h || 0)) * cf;
+                            } else {
+                                openWidthM = Math.max(o.w || 0, o.h || 0) * cf;
+                            }
+                            const openHeightM = Math.min(heightM, Math.max(0.01, o.zHeight || 2.1));
+                            deductionM2 += openWidthM * openHeightM;
+                        });
+                    }
+                } catch (_) {}
+                const netFace = Math.max(0, gross - deductionM2);
+                wallFaceM2 += netFace;
                 // Thickness is stored in metres — never derive from thicknessDraw/pixels.
                 // Use current value whenever positive so Properties edits always reflow totals.
                 let thkM = (typeof w.thickness === 'number' && isFinite(w.thickness) && w.thickness > 0)
                     ? w.thickness : DEFAULT_WALL_THICKNESS_M;
-                wallVolM3 += lengthM * thkM * heightM;
+                wallVolM3 += netFace * thkM;
             });
 
             function planAreaM2(el) {
@@ -569,7 +591,7 @@
                 return (Number(el.w) || 0) * (Number(el.h) || 0) * cf * cf;
             }
             // BOQ / material estimate: always use current element dimensions.
-            // Opening deductions stay in the live quantity table only — not in BOQ totals.
+            // Opening / cutout deductions are applied here so Export matches Live Quantities.
             // User edits to Thickness / Height / Depth must flow into totals immediately.
             // (AI import may still write bad heights; QS can correct them in Properties.)
             function slabThicknessM(el, defaultH) {
@@ -593,11 +615,52 @@
             }
 
             let slabVol = 0, slabArea = 0;
+            // Slab–slab and slab–structural overlaps (drawing units) — same as Live Quantities
+            let slabSlabOl = {};
+            let slabStructuralOl = {};
+            try {
+                if (typeof computeSlabSlabOverlapDeductions === 'function') {
+                    slabSlabOl = computeSlabSlabOverlapDeductions(slabs) || {};
+                }
+                if (typeof computeSlabStructuralOverlapDeductions === 'function') {
+                    slabStructuralOl = computeSlabStructuralOverlapDeductions(slabs, walls, columns) || {};
+                }
+            } catch (_) {}
             slabs.forEach(s => {
                 if (!accepted(s)) return;
                 const r = slabColVol(s, DEFAULT_SLAB_THICKNESS_M, 'slab');
-                slabVol += r.vol;
-                slabArea += r.area;
+                let cutAreaM2 = 0;
+                // Explicit cutouts / openings parented to or overlapping this slab
+                try {
+                    if (typeof getDeductionsOverlapping === 'function') {
+                        const hits = getDeductionsOverlapping(s, openingsAll) || [];
+                        hits.forEach(function (hit) {
+                            const o = hit.opening;
+                            let aM2 = 0;
+                            if (o && o.vertices && o.vertices.length >= 3 && typeof polygonArea === 'function') {
+                                const abs = o.vertices.map(function (v) {
+                                    return { x: (o.x || 0) + (v.x || 0), y: (o.y || 0) + (v.y || 0) };
+                                });
+                                aM2 = polygonArea(abs) * cf * cf;
+                            } else if (o && (o.w || o.h)) {
+                                aM2 = (Number(o.w) || 0) * (Number(o.h) || 0) * cf * cf;
+                            } else if (hit.areaDraw) {
+                                aM2 = hit.areaDraw * cf * cf;
+                            }
+                            cutAreaM2 += aM2;
+                        });
+                    }
+                } catch (_) {}
+                // Slab∩slab and slab∩wall/column overlaps (drawing-unit areas → m²)
+                const ssOl = slabSlabOl[s.id] || 0;
+                if (ssOl > 0) cutAreaM2 += ssOl * cf * cf;
+                const hostOl = slabStructuralOl[s.id] || 0;
+                if (hostOl > 0) cutAreaM2 += hostOl * cf * cf;
+
+                const netArea = Math.max(0, r.area - cutAreaM2);
+                const thk = (r.vol > 0 && r.area > 0) ? (r.vol / r.area) : slabThicknessM(s, DEFAULT_SLAB_THICKNESS_M);
+                slabVol += netArea * thk;
+                slabArea += netArea;
             });
             let colVol = 0;
             columns.forEach(c => { if (accepted(c)) colVol += slabColVol(c, 3.0, 'column').vol; });
@@ -636,7 +699,16 @@
                     : Math.max(Number(w.w) || 0, Number(w.h) || 0);
                 const lengthM = lenDraw * cf;
                 const heightM = (w.zHeight != null && w.zHeight > 0) ? w.zHeight : 3.0;
-                const face = lengthM * heightM;
+                const grossFace = lengthM * heightM;
+                let deductionM2 = 0;
+                try {
+                    if (typeof collectWallDeductions === 'function') {
+                        (collectWallDeductions(w) || []).forEach(function (d) {
+                            deductionM2 += Number(d.deductM2) || 0;
+                        });
+                    }
+                } catch (_) {}
+                const face = Math.max(0, grossFace - deductionM2);
                 const cls = classifyWallMasonry(w);
                 if (cls.kind === 'block' && blockFace[cls.thicknessMm] != null) {
                     blockFace[cls.thicknessMm] += face;
