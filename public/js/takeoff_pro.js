@@ -607,8 +607,15 @@
                 const lenDraw = isLine
                     ? (Number(b.length) || Math.hypot(Number(b.p2.x) - Number(b.p1.x), Number(b.p2.y) - Number(b.p1.y)))
                     : Math.max(Number(b.w) || 0, Number(b.h) || 0);
-                // Match Simple Mode defaults: beamWidth 0.23 × beamDepth 0.45
-                const gross = (lenDraw * cf) * 0.23 * 0.45;
+                // Live dimensions: width = thickness (m), depth = zHeight (m).
+                // Any edit to length / thickness / depth must flow into totals.
+                const widthM = (typeof b.thickness === 'number' && b.thickness > 0)
+                    ? b.thickness
+                    : DEFAULT_BEAM_THICKNESS_M;
+                const depthM = (typeof b.zHeight === 'number' && b.zHeight > 0)
+                    ? b.zHeight
+                    : 0.45;
+                const gross = (lenDraw * cf) * widthM * depthM;
                 beamVol += Math.max(0, gross);
             });
 
@@ -2679,6 +2686,133 @@
             pts.forEach(p => { cx += p.x;
                 cy += p.y; });
             return { x: cx / pts.length, y: cy / pts.length };
+        }
+
+        /** Point-in-polygon (ray cast). pts are absolute world coords. */
+        function pointInPolygon(px, py, pts) {
+            if (!pts || pts.length < 3) return false;
+            let inside = false;
+            for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+                const xi = pts[i].x, yi = pts[i].y;
+                const xj = pts[j].x, yj = pts[j].y;
+                if (((yi > py) !== (yj > py)) &&
+                    (px < (xj - xi) * (py - yi) / ((yj - yi) || 1e-12) + xi)) {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        /** Absolute world vertices for a polygon/box element. */
+        function elementWorldPoints(el) {
+            if (!el) return null;
+            if (el.isLine && el.p1 && el.p2) return [el.p1, el.p2];
+            if (Array.isArray(el.vertices) && el.vertices.length >= 3) {
+                return el.vertices.map(function (v) {
+                    return { x: (el.x || 0) + (v.x || 0), y: (el.y || 0) + (v.y || 0) };
+                });
+            }
+            const x = el.x || 0, y = el.y || 0;
+            const w = el.w || 0, h = el.h || 0;
+            if (w <= 0 || h <= 0) return null;
+            return [
+                { x: x, y: y },
+                { x: x + w, y: y },
+                { x: x + w, y: y + h },
+                { x: x, y: y + h }
+            ];
+        }
+
+        /**
+         * Resolve host for a polygon cutout/opening.
+         * Accepts wall, beam, slab, column (and selected/locked parent as fallback).
+         * Scores candidates by containment of cutout centroid, then by plan overlap.
+         */
+        function findCutoutParent(pts, cutoutBounds) {
+            const hosts = (elements || []).filter(function (e) {
+                if (!e || e.hidden) return false;
+                if (e.isDeduction || e.type === 'cutout' || e.type === 'opening' || e.type === 'door' || e.type === 'window') return false;
+                return e.type === 'wall' || e.type === 'beam' || e.type === 'slab' || e.type === 'column';
+            });
+            if (!hosts.length) return null;
+
+            const cx = pts.reduce(function (s, p) { return s + p.x; }, 0) / pts.length;
+            const cy = pts.reduce(function (s, p) { return s + p.y; }, 0) / pts.length;
+            const cutBox = cutoutBounds || polygonBounds(pts);
+
+            let best = null;
+            let bestScore = -1;
+
+            function consider(e, score) {
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = e;
+                }
+            }
+
+            hosts.forEach(function (e) {
+                // ---- Line wall / beam: distance from centroid to segment ----
+                if (e.isLine && e.p1 && e.p2) {
+                    const ax = e.p1.x, ay = e.p1.y, bx = e.p2.x, by = e.p2.y;
+                    const abx = bx - ax, aby = by - ay;
+                    const len2 = abx * abx + aby * aby || 1;
+                    let t = ((cx - ax) * abx + (cy - ay) * aby) / len2;
+                    t = Math.max(0, Math.min(1, t));
+                    const px = ax + t * abx, py = ay + t * aby;
+                    let half = 8;
+                    try {
+                        if (typeof getLineThicknessDraw === 'function') half = getLineThicknessDraw(e) / 2;
+                        else if (typeof e.thicknessDraw === 'number') half = e.thicknessDraw / 2;
+                    } catch (_) {}
+                    // Generous hit tolerance (screen-space padding + thickness)
+                    const tol = half + Math.max(12, 14 / (viewport.scale || 1));
+                    const dist = Math.hypot(cx - px, cy - py);
+                    if (dist <= tol) {
+                        // Higher score when closer to centerline
+                        consider(e, 1000 - dist);
+                    }
+                    return;
+                }
+
+                // ---- Area hosts: slab / column / box wall ----
+                const worldPts = elementWorldPoints(e);
+                if (worldPts && worldPts.length >= 3 && pointInPolygon(cx, cy, worldPts)) {
+                    // Prefer smaller hosts that tightly contain the cutout (e.g. room slab over whole floor)
+                    const hostArea = polygonArea(worldPts) || 1;
+                    consider(e, 500 + 1 / hostArea);
+                    return;
+                }
+                // AABB / overlap fallback
+                if (cutBox && e.w > 0 && e.h > 0) {
+                    const oa = overlapArea(
+                        { x: cutBox.x, y: cutBox.y, w: cutBox.w, h: cutBox.h },
+                        e
+                    );
+                    if (oa > 1e-6) {
+                        const hostArea = (e.w || 1) * (e.h || 1);
+                        consider(e, 100 + oa / hostArea);
+                    }
+                }
+            });
+
+            // Explicit Properties lock
+            if (!best && typeof deductionTargetLocked !== 'undefined' && deductionTargetLocked &&
+                pendingDeductionParentId != null) {
+                const locked = findElementById(pendingDeductionParentId);
+                if (locked && !locked.hidden &&
+                    (locked.type === 'wall' || locked.type === 'beam' || locked.type === 'slab' || locked.type === 'column')) {
+                    best = locked;
+                }
+            }
+            // Selected structural element as last resort
+            if (!best && selectedIds && selectedIds.length === 1) {
+                const sel = findElementById(selectedIds[0]);
+                if (sel && !sel.hidden &&
+                    (sel.type === 'wall' || sel.type === 'beam' || sel.type === 'slab' || sel.type === 'column')) {
+                    best = sel;
+                }
+            }
+            return best;
         }
 
         function createPolygonElement(type, vertices, props = {}) {
@@ -5757,6 +5891,8 @@
                 if (threeInitialized) {
                     try { buildThreeScene(); } catch (_) {}
                 }
+                // Propagate live dimension edits into research/dashboard totals
+                try { scheduleResearchQuantitySync(); } catch (_) {}
             };
             const markManualIfEdited = () => {
                 // User is editing an AI element → AI_EDITED (kept on re-detect)
@@ -7247,8 +7383,8 @@
                     } else {
                         lengthM = Math.max(el.w || 0, el.h || 0) * cf;
                     }
-                    // Approximate beam section from thickness / width props if present
-                    const widthM = (typeof el.thickness === "number" && el.thickness > 0) ? el.thickness : 0.23;
+                    // Live beam section from current thickness / depth props
+                    const widthM = (typeof el.thickness === "number" && el.thickness > 0) ? el.thickness : DEFAULT_BEAM_THICKNESS_M;
                     const depthM = getZHeight(el, 0.45);
                     result.grossAreaM2 = lengthM * widthM; // plan
                     result.grossVolumeM3 = lengthM * widthM * depthM;
@@ -7593,9 +7729,16 @@
                 });
             });
             beams.forEach(b => {
+                // Live dimensions — same rules as computeMaterialEstimate / 3D viewer
+                const beamWidthM = (typeof b.thickness === 'number' && b.thickness > 0)
+                    ? b.thickness
+                    : DEFAULT_BEAM_THICKNESS_M;
+                const beamDepthM = (typeof b.zHeight === 'number' && b.zHeight > 0)
+                    ? b.zHeight
+                    : 0.45;
                 const grossVol = (b.isLine && b.length != null)
-                    ? (b.length * cf) * (b.thickness || 0.20) * (b.zHeight || 0.3)
-                    : (b.w * cf) * (b.h * cf) * b.zHeight;
+                    ? (b.length * cf) * beamWidthM * beamDepthM
+                    : (b.w * cf) * (b.h * cf) * beamDepthM;
                 const hits = getDeductionsOverlapping(b, openingsAll);
                 let deductVol = 0;
                 let dedRemarks = [];
@@ -7603,8 +7746,8 @@
                     let openWidthDraw = b.isLine ? cutoutWidthAlongLine(b, o) : Math.max(o.w, o.h);
                     if (openWidthDraw < 1e-6) openWidthDraw = Math.max(o.w, o.h);
                     const openWidthM = openWidthDraw * cf;
-                    const thk = b.thickness || 0.20;
-                    const dH = Math.min(b.zHeight || 0.3, o.zHeight || 0.3);
+                    const thk = beamWidthM;
+                    const dH = Math.min(beamDepthM, (o.zHeight || beamDepthM));
                     const dVol = openWidthM * thk * dH;
                     deductVol += dVol;
                     dedRemarks.push(`${o.label}(${dVol.toFixed(3)}m³)`);
@@ -7623,8 +7766,8 @@
                     }
                     if (olDraw <= 1e-6) return;
                     const olM = olDraw * cf;
-                    const bThk = b.thickness || 0.20;
-                    const bDepth = b.zHeight || 0.3;
+                    const bThk = beamWidthM;
+                    const bDepth = beamDepthM;
                     const dVol = olM * bThk * bDepth;
                     deductVol += dVol;
                     dedRemarks.push(`Wall∩${w.label || w.id}(${dVol.toFixed(3)}m³)`);
@@ -7795,8 +7938,15 @@
                     const label = this.dataset.label;
                     if (elementId && !isNaN(elementId)) {
                         const el = elements.find(e => e.id === elementId);
-                        if (el) { selectedIds = [el.id];
-                            renderAll(); }
+                        if (el) {
+                            selectedIds = [el.id];
+                            renderAll();
+                            try {
+                                if (typeof currentView !== 'string' || currentView === '2d') {
+                                    zoomToElement(el);
+                                }
+                            } catch (_) {}
+                        }
                     } else if (label) {
                         if (label === 'All Walls') {
                             const ids = elements.filter(e => e.type === 'wall').map(e => e.id);
@@ -9101,49 +9251,24 @@
                 const el = createPolygonElement(type, pts);
                 if (el) {
                     if (type === 'cutout') {
-                        // Prefer the wall under the drawn polygon so continuous multi-wall
-                        // deductions work. Explicit Properties lock is only a fallback.
-                        let parent = null;
-                        const cx = (pts.reduce((s, p) => s + p.x, 0) / pts.length);
-                        const cy = (pts.reduce((s, p) => s + p.y, 0) / pts.length);
-                        for (let i = elements.length - 1; i >= 0; i--) {
-                            const e = elements[i];
-                            if (e.hidden || e.isDeduction || e.type !== 'wall') continue;
-                            if (e.isLine && e.p1 && e.p2) {
-                                const ax = e.p1.x,
-                                    ay = e.p1.y,
-                                    bx = e.p2.x,
-                                    by = e.p2.y;
-                                const abx = bx - ax,
-                                    aby = by - ay;
-                                const len2 = abx * abx + aby * aby || 1;
-                                let t = ((cx - ax) * abx + (cy - ay) * aby) / len2;
-                                t = Math.max(0, Math.min(1, t));
-                                const px = ax + t * abx,
-                                    py = ay + t * aby;
-                                const thk = (e.isLine ? getLineThicknessDraw(e) : toDrawing(e.thickness || DEFAULT_WALL_THICKNESS_M)) / 2 + 10 / viewport.scale;
-                                if (Math.hypot(cx - px, cy - py) <= thk) {
-                                    parent = e;
-                                    break;
-                                }
-                            } else if (cx >= e.x && cx <= e.x + e.w && cy >= e.y && cy <= e.y + e.h) {
-                                parent = e;
-                                break;
-                            }
-                        }
-                        if (!parent && deductionTargetLocked && pendingDeductionParentId != null) {
-                            parent = findElementById(pendingDeductionParentId);
-                            if (parent && parent.type !== 'wall') parent = null;
-                        }
+                        // Resolve host: wall, beam, slab, or column under the polygon
+                        // (or locked/selected structural element).
+                        const parent = findCutoutParent(pts, polygonBounds(pts));
                         if (parent) {
-                            // Polygon Cutout keeps single opening-height prompt (only Deduction Wall uses bottom+top levels)
-                            const defaultH = parent.zHeight || 2.1;
+                            // Walls/beams: opening height (m). Slabs/columns: use host thickness/height.
+                            const defaultH = (parent.type === 'slab')
+                                ? (parent.zHeight || DEFAULT_SLAB_THICKNESS_M)
+                                : (parent.type === 'column')
+                                    ? (parent.zHeight || 3.0)
+                                    : (parent.zHeight || 2.1);
+                            const heightHint = (parent.type === 'slab')
+                                ? `Slab cut-out thickness defaults to the slab thickness.\nEnter thickness to deduct (m):`
+                                : `Confirm OPENING HEIGHT in meters.\n\n` +
+                                  `Tip: the opening starts from the finished floor level (FFL)\n` +
+                                  `(sill at 0 m = from floor). This height is deducted from the ${parent.type}.\n\n` +
+                                  `Enter opening height (m):`;
                             const heightInput = prompt(
-                                `Deduction on ${parent.label}\n\n` +
-                                `Confirm OPENING HEIGHT in meters.\n\n` +
-                                `Tip: the opening starts from the finished floor level (FFL)\n` +
-                                `(sill at 0 m = from floor). This height is deducted from the ${parent.type}.\n\n` +
-                                `Enter opening height (m):`,
+                                `Deduction on ${parent.label} (${parent.type})\n\n` + heightHint,
                                 String(defaultH)
                             );
                             if (heightInput === null) {
@@ -9186,11 +9311,11 @@
                             polygonElementType = null;
                             selectedIds = [parent.id];
                             stayInDrawingTool('cutout',
-                                `Deduction saved on ${parent.label} · draw on another wall for next · Esc exits tool`);
+                                `Deduction saved on ${parent.label} · draw next opening · Esc exits tool`);
                             renderAll();
                             return;
                         } else {
-                            alert('No parent found under cutout. Please place it on a wall/beam/slab/floor.');
+                            alert('No parent found under cutout.\n\nDraw the opening on top of a wall, beam, slab, or column.\nOr select a structural element first, then use Cutout / Deduction.');
                             polygonPoints = [];
                             renderCanvas2D();
                             return;
@@ -11301,18 +11426,59 @@
         }
         function zoomToElement(el) {
             if (!el) return;
-            const pts = el.isLine && el.p1 && el.p2 ? [el.p1, el.p2] :
-                (Array.isArray(el.vertices) && el.vertices.length ? el.vertices : [{x: el.x || 0, y: el.y || 0}, {x: (el.x || 0) + (el.w || 1), y: (el.y || 0) + (el.h || 1)}]);
-            const minX = Math.min(...pts.map(p => p.x)), maxX = Math.max(...pts.map(p => p.x));
-            const minY = Math.min(...pts.map(p => p.y)), maxY = Math.max(...pts.map(p => p.y));
+            // Build world-space points that frame the element correctly.
+            // Vertices are stored relative to el.x/el.y — convert to absolute.
+            let pts = [];
+            if (el.isLine && el.p1 && el.p2) {
+                pts = [el.p1, el.p2];
+            } else if (Array.isArray(el.vertices) && el.vertices.length >= 2) {
+                pts = el.vertices.map(function (v) {
+                    return { x: (el.x || 0) + (v.x || 0), y: (el.y || 0) + (v.y || 0) };
+                });
+            } else {
+                const x = el.x || 0, y = el.y || 0;
+                const w = Math.max(1, el.w || 1), h = Math.max(1, el.h || 1);
+                pts = [
+                    { x: x, y: y },
+                    { x: x + w, y: y },
+                    { x: x + w, y: y + h },
+                    { x: x, y: y + h }
+                ];
+            }
+            let minX = Math.min.apply(null, pts.map(function (p) { return p.x; }));
+            let maxX = Math.max.apply(null, pts.map(function (p) { return p.x; }));
+            let minY = Math.min.apply(null, pts.map(function (p) { return p.y; }));
+            let maxY = Math.max.apply(null, pts.map(function (p) { return p.y; }));
+            // Expand thin line walls/beams by half thickness so the stroke is in view
+            if (el.isLine) {
+                let half = 4;
+                try {
+                    if (typeof getLineThicknessDraw === 'function') half = Math.max(2, getLineThicknessDraw(el) / 2);
+                    else if (typeof el.thicknessDraw === 'number' && el.thicknessDraw > 0) half = el.thicknessDraw / 2;
+                } catch (_) {}
+                minX -= half; maxX += half; minY -= half; maxY += half;
+            }
             const { W, H } = getViewerSize();
             const pad = 90;
-            const worldW = Math.max(1, maxX - minX), worldH = Math.max(1, maxY - minY);
-            viewport.scale = Math.max(0.05, Math.min(10, Math.min((W - pad * 2) / worldW, (H - pad * 2) / worldH)));
+            // Avoid extreme zoom on point-like or very thin elements
+            const worldW = Math.max(20, maxX - minX);
+            const worldH = Math.max(20, maxY - minY);
+            const nextScale = Math.max(0.05, Math.min(10, Math.min((W - pad * 2) / worldW, (H - pad * 2) / worldH)));
+            viewport.scale = nextScale;
             viewport.offsetX = W / 2 - ((minX + maxX) / 2) * viewport.scale;
             viewport.offsetY = H / 2 - ((minY + maxY) / 2) * viewport.scale;
             updateZoomDisplays();
             renderCanvas2D();
+        }
+
+        /** Zoom to a single selected element when in 2D view (tree / table / programmatic). */
+        function zoomToSelectionIf2D() {
+            try {
+                if (typeof currentView === 'string' && currentView !== '2d') return;
+                if (!selectedIds || selectedIds.length !== 1) return;
+                const el = findElementById(selectedIds[0]);
+                if (el) zoomToElement(el);
+            } catch (_) {}
         }
 
         // ----- TREE RENDER -----
@@ -11368,7 +11534,12 @@
                         }
                     }
                     renderAll();
-                    zoomToElement(findElementById(id));
+                    // Single primary selection → frame it in 2D
+                    try {
+                        if (typeof currentView !== 'string' || currentView === '2d') {
+                            zoomToElement(findElementById(id));
+                        }
+                    } catch (_) {}
                 });
             });
         }
