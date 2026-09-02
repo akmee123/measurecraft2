@@ -1697,18 +1697,18 @@
 
       const wrap = $('materials-table-wrap') || $('rates-table-wrap');
       if (wrap) {
-        let table = '<table class="data-table"><thead><tr><th>Material</th><th>Qty</th><th>Unit</th><th>Price</th><th>Total</th></tr></thead><tbody>';
+        let table = '<table class="data-table"><thead><tr><th>Material</th><th>Qty</th><th>Unit Rate</th><th>Total</th></tr></thead><tbody>';
         if (!est.materials || !est.materials.length) {
-          table += '<tr><td colspan="5" class="empty-msg">No accepted elements with scale yet.</td></tr>';
+          table += '<tr><td colspan="4" class="empty-msg">No accepted elements with scale yet.</td></tr>';
         } else {
           est.materials.forEach(m => {
-            const qtyStr = m.unit === 'Nr' ? String(m.qty) : (typeof m.qty === 'number' ? m.qty.toFixed(3) : m.qty);
+            const qtyNum = m.unit === 'Nr' ? String(m.qty) : (typeof m.qty === 'number' ? m.qty.toFixed(3) : m.qty);
+            const qtyStr = qtyNum + ' <span style="font-weight:400;color:var(--text-2);">' + escapeHtml(m.unit || '') + '</span>';
             const priceVal = m.price != null ? m.price : '';
             table += '<tr>' +
               '<td><div style="font-weight:600;">' + escapeHtml(m.material) + '</div>' +
               '<div style="font-size:10px;color:var(--text-3);margin-top:2px;">' + escapeHtml(m.source || '') + '</div></td>' +
               '<td style="text-align:right;font-variant-numeric:tabular-nums;color:var(--teal,#2F6E62);font-weight:600;">' + qtyStr + '</td>' +
-              '<td>' + escapeHtml(m.unit) + '</td>' +
               '<td><input type="number" min="0" step="any" data-rate-key="' + escapeHtml(m.material) + '" value="' + priceVal + '" placeholder="—"></td>' +
               '<td class="amount">' + (m.total != null ? formatMoney(m.total) : '—') + '</td></tr>';
           });
