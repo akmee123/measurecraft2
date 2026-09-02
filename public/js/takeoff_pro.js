@@ -1006,6 +1006,11 @@
         let currentView = '2d';
         let currentLayer = 'All';
         let layers = ['All', 'Structural', 'Architectural', 'MEP', 'Furniture'];
+        // Drawing review filters (left panel + canvas dimming)
+        let reviewFilter = 'all'; // 'all' | 'unreviewed' | 'low_conf' | 'ai'
+        let typeFilter = '';     // '' | 'wall' | 'beam' | 'column' | 'slab' | 'cutout' | ...
+        let confidenceHeatmap = true;
+        const LOW_CONFIDENCE_THRESHOLD = 0.6;
 
         // Element identity is deliberately independent of array order or display labels.
         // IDs in older project files may be numeric strings, missing, or duplicated after
@@ -4017,6 +4022,16 @@
             try { saveState(); } catch (_) {}
             renderAll();
             closeAiReviewModal();
+            // Background QA after accepting AI results
+            try {
+                const issues = runQaScan(elements);
+                const btn = document.getElementById('btnQaScan');
+                if (btn) btn.classList.toggle('has-issues', issues.some(i => i.severity === 'error' || i.severity === 'warn'));
+                const nProb = issues.filter(i => i.severity === 'error' || i.severity === 'warn').length;
+                if (nProb > 0 && typeof showToast === 'function') {
+                    showToast('QA found ' + nProb + ' issue(s) after AI accept — click QA to review', 'warn');
+                }
+            } catch (_) {}
         }
 
         function wireAiReviewModal() {
@@ -4027,7 +4042,31 @@
             if (accept) accept.addEventListener('click', acceptAllAiReview);
             if (reject) reject.addEventListener('click', rejectAllAiReview);
             if (review) review.addEventListener('click', function () {
-                if (modal) modal.classList.toggle('reviewing');
+                // Enter review workflow: close modal, filter to unreviewed AI, focus first
+                reviewFilter = 'unreviewed';
+                const rf = document.getElementById('review-filters');
+                if (rf) {
+                    rf.querySelectorAll('[data-rfilter]').forEach(function (b) {
+                        b.classList.toggle('active', b.dataset.rfilter === 'unreviewed');
+                    });
+                }
+                closeAiReviewModal();
+                renderTree();
+                renderCanvas2D();
+                // Select first unreviewed
+                const queue = elements.filter(function (el) {
+                    return !el.hidden && getReviewStatus(el) === 'AI_GENERATED';
+                });
+                if (queue.length) {
+                    selectedIds = expandSelectionWithChildren([queue[0].id]);
+                    try { if (currentView === '2d') zoomToElement(queue[0]); } catch (_) {}
+                    renderAll();
+                }
+                try {
+                    if (typeof showToast === 'function') {
+                        showToast('Review mode: A=Accept · X=Reject · N/P=Next/Prev unreviewed', 'info');
+                    }
+                } catch (_) {}
             });
             if (modal) modal.addEventListener('click', function (e) {
                 if (e.target === modal) acceptAllAiReview();
@@ -4112,6 +4151,7 @@
             }
 
             const layerFilter = currentLayer === 'All' ? null : currentLayer;
+            const hasActiveReviewFilter = reviewFilter !== 'all' || !!typeFilter;
             const visibleEls = elementsOnDrawingVisible
                 ? elements.filter(el => !el.hidden && (layerFilter === null || el.layer === layerFilter || el.layer === 'All'))
                 : [];
@@ -4239,8 +4279,46 @@
             visibleEls.forEach(el => {
                 const { x, y, w, h } = el;
                 ctx.save();
+                // Dim elements that do not match active review filters
+                const matchesFilter = !hasActiveReviewFilter || matchesReviewFilter(el);
+                if (!matchesFilter) {
+                    ctx.globalAlpha = 0.22;
+                }
                 ctx.shadowColor = 'rgba(0,0,0,0.1)';
                 ctx.shadowBlur = 4 / viewport.scale;
+
+                // Confidence heatmap wash (AI detections only)
+                if (confidenceHeatmap && matchesFilter && el.confidence != null) {
+                    const conf = Number(el.confidence);
+                    const c = conf > 1 ? conf / 100 : conf; // normalize 0-1
+                    if (isFinite(c)) {
+                        let heat;
+                        if (c >= 0.8) heat = 'rgba(34, 197, 94, 0.28)';      // green
+                        else if (c >= 0.6) heat = 'rgba(234, 179, 8, 0.32)'; // amber
+                        else heat = 'rgba(239, 68, 68, 0.35)';               // red
+                        ctx.fillStyle = heat;
+                        if (el.vertices && el.vertices.length >= 3) {
+                            const pts = el.vertices.map(v => ({ x: el.x + v.x, y: el.y + v.y }));
+                            ctx.beginPath();
+                            ctx.moveTo(pts[0].x, pts[0].y);
+                            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+                            ctx.closePath();
+                            ctx.fill();
+                        } else if (w > 0 && h > 0) {
+                            ctx.fillRect(x, y, w, h);
+                        } else if (el.isLine && el.p1 && el.p2) {
+                            // line-like wall/beam — thick stroke wash along centerline
+                            ctx.strokeStyle = heat;
+                            const thk = (el.thickness != null ? Number(el.thickness) : 0.15);
+                            ctx.lineWidth = Math.max(thk / (calibrationFactor || 1), 10 / viewport.scale);
+                            ctx.lineCap = 'round';
+                            ctx.beginPath();
+                            ctx.moveTo(el.p1.x, el.p1.y);
+                            ctx.lineTo(el.p2.x, el.p2.y);
+                            ctx.stroke();
+                        }
+                    }
+                }
 
                 // Ensure slab/column have vertices so shape handles match column editing
                 if ((el.type === 'slab' || el.type === 'column') && selectedIds.includes(el.id)) {
@@ -4407,6 +4485,31 @@
                     ctx.font = `${8 / viewport.scale}px sans-serif`;
                     const lenM = toMeters(len);
                     ctx.fillText(`${lenM.toFixed(2)} m · z=${(el.zHeight || 0).toFixed(2)}m`, midX + 2, midY - thkDraw / 2 + 10 / viewport.scale);
+                    // Deduction count badge for line walls
+                    if (el.type === 'wall') {
+                        let dedCount = 0;
+                        try {
+                            if (typeof collectWallDeductions === 'function') {
+                                dedCount = (collectWallDeductions(el) || []).length;
+                            }
+                        } catch (_) {}
+                        if (dedCount > 0) {
+                            const bx = midX + 18 / viewport.scale;
+                            const by = midY - thkDraw / 2 - 10 / viewport.scale;
+                            const r = 7 / viewport.scale;
+                            ctx.fillStyle = '#ef4444';
+                            ctx.beginPath();
+                            ctx.arc(bx, by, r, 0, Math.PI * 2);
+                            ctx.fill();
+                            ctx.fillStyle = '#fff';
+                            ctx.font = `bold ${9 / viewport.scale}px sans-serif`;
+                            ctx.textAlign = 'center';
+                            ctx.textBaseline = 'middle';
+                            ctx.fillText('−' + dedCount, bx, by);
+                            ctx.textAlign = 'left';
+                            ctx.textBaseline = 'alphabetic';
+                        }
+                    }
                     if (selectedIds.includes(el.id) && selectedIds.length === 1 && !el.locked) {
                         drawRotateHandle(ctx, el);
                     }
@@ -4496,6 +4599,35 @@
                     ctx.fillStyle = '#888';
                     ctx.font = `${7/viewport.scale}px sans-serif`;
                     ctx.fillText(`📁${el.layer}`, x + 2, y + 36);
+                }
+                // Deduction indicator badge (walls / slabs with active geometric deductions)
+                if (el.type === 'wall' || el.type === 'slab') {
+                    let dedCount = 0;
+                    try {
+                        if (el.type === 'wall' && typeof collectWallDeductions === 'function') {
+                            dedCount = (collectWallDeductions(el) || []).length;
+                        } else if (el.type === 'slab' && typeof getDeductionsOverlapping === 'function') {
+                            const opAll = elements.filter(e =>
+                                !e.hidden && (e.type === 'door' || e.type === 'window' || e.type === 'opening' || e.isDeduction || e.type === 'cutout'));
+                            dedCount = (getDeductionsOverlapping(el, opAll) || []).length;
+                        }
+                    } catch (_) {}
+                    if (dedCount > 0) {
+                        const bx = x + (w || 20) - 2 / viewport.scale;
+                        const by = y + 2 / viewport.scale;
+                        const r = 7 / viewport.scale;
+                        ctx.fillStyle = '#ef4444';
+                        ctx.beginPath();
+                        ctx.arc(bx, by, r, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.fillStyle = '#fff';
+                        ctx.font = `bold ${9 / viewport.scale}px sans-serif`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText('−' + dedCount, bx, by);
+                        ctx.textAlign = 'left';
+                        ctx.textBaseline = 'alphabetic';
+                    }
                 }
             });
 
@@ -5576,15 +5708,17 @@
 
             if (qtyBtn && qtyPanel && qtyPanel.classList.contains('open')) {
                 const r = qtyPanel.getBoundingClientRect();
-                // Sit centered on the TOP edge of the quantities table
-                qtyBtn.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+                // Sit on the right, just above the quantities panel (no center overlap with FAB)
+                qtyBtn.style.bottom = (window.innerHeight - r.top + 8) + 'px';
                 qtyBtn.style.top = 'auto';
-                qtyBtn.style.left = '50%';
-                qtyBtn.style.transform = 'translateX(-50%)';
+                qtyBtn.style.left = 'auto';
+                qtyBtn.style.right = '20px';
+                qtyBtn.style.transform = 'none';
             } else if (qtyBtn) {
                 qtyBtn.style.bottom = '';
                 qtyBtn.style.top = '';
                 qtyBtn.style.left = '';
+                qtyBtn.style.right = '';
                 qtyBtn.style.transform = '';
             }
 
@@ -6095,14 +6229,12 @@
                     currentTool = 'deduction_wall';
                     const btn = document.getElementById('toolDeductionWall');
                     if (btn) btn.classList.add('tool-active');
-                    document.getElementById('statusMode').textContent =
-                        `Deduction on ${el.label}: click along the wall (snap) · Enter to finish`;
+                    document.getElementById('statusMode').textContent = 'Deduction';
                 } else {
                     currentTool = 'cutout';
                     const btn = document.getElementById('toolCutout');
                     if (btn) btn.classList.add('tool-active');
-                    document.getElementById('statusMode').textContent =
-                        `Deduction on ${el.label}: click polygon around column/opening · Enter to finish`;
+                    document.getElementById('statusMode').textContent = 'Cutout';
                 }
                 document.getElementById('canvas2d').style.cursor = 'crosshair';
                 polygonPoints = [];
@@ -6565,14 +6697,36 @@
         function getDeductionsOverlapping(el, openingsAll) {
             const hits = [];
             openingsAll.forEach(function (o) {
-                // Deductions with an explicit parent belong ONLY to that wall
+                // Deductions with an explicit parent belong ONLY to that host
                 if (o.parentId != null && !sameElementId(o.parentId, el.id)) return;
                 if (o.parentId != null && sameElementId(o.parentId, el.id)) {
-                    hits.push({ opening: o, areaDraw: Math.max((o.w || 0) * (o.h || 0), 1) });
+                    // Prefer precise plan overlap for slab hosts; fall back to opening footprint
+                    let areaDraw = 0;
+                    if (el.type === 'slab') {
+                        areaDraw = planOverlapArea(el, o);
+                        if (areaDraw < 1e-6) {
+                            // Parent-linked opening fully inside slab → use opening plan area
+                            if (o.vertices && o.vertices.length >= 3) {
+                                const abs = o.vertices.map(v => ({ x: (o.x || 0) + (v.x || 0), y: (o.y || 0) + (v.y || 0) }));
+                                areaDraw = polygonArea(abs);
+                            } else {
+                                areaDraw = Math.max((o.w || 0) * (o.h || 0), 0);
+                            }
+                        }
+                    } else {
+                        areaDraw = Math.max((o.w || 0) * (o.h || 0), 1);
+                    }
+                    hits.push({ opening: o, areaDraw: areaDraw });
                     return;
                 }
-                const oa = overlapArea(el, o);
-                if (oa > 0) hits.push({ opening: o, areaDraw: oa });
+                // Geometric overlap (no parent link)
+                let oa = 0;
+                if (el.type === 'slab') {
+                    oa = planOverlapArea(el, o);
+                } else {
+                    oa = overlapArea(el, o);
+                }
+                if (oa > 1e-9) hits.push({ opening: o, areaDraw: oa });
             });
             return hits;
         }
@@ -6761,15 +6915,43 @@
                     (Array.isArray(col.deductFromWallIds) && col.deductFromWallIds.some(function (wid) { return sameElementId(wid, wall.id); }));
                 if (!linked && !elementIntersectsWall(wall, col)) return;
                 let openWidthDraw;
-                if (wall.isLine) {
+                if (wall.isLine && wall.p1 && wall.p2) {
+                    // Project column footprint onto wall centerline → occupied length
                     openWidthDraw = cutoutWidthAlongLine(wall, col);
                     if (openWidthDraw < 1e-6) {
-                        openWidthDraw = Math.min(col.w || 0, col.h || 0) || Math.max(col.w || 0, col.h || 0);
+                        // Fallback: column extent measured along the wall axis
+                        const ax = wall.p1.x, ay = wall.p1.y, bx = wall.p2.x, by = wall.p2.y;
+                        const len = Math.hypot(bx - ax, by - ay) || 1;
+                        const ux = (bx - ax) / len, uy = (by - ay) / len;
+                        let pts = [];
+                        if (col.vertices && col.vertices.length >= 3) {
+                            pts = col.vertices.map(v => ({ x: (col.x || 0) + (v.x || 0), y: (col.y || 0) + (v.y || 0) }));
+                        } else {
+                            pts = [
+                                { x: col.x, y: col.y },
+                                { x: col.x + (col.w || 0), y: col.y },
+                                { x: col.x + (col.w || 0), y: col.y + (col.h || 0) },
+                                { x: col.x, y: col.y + (col.h || 0) }
+                            ];
+                        }
+                        let tMin = Infinity, tMax = -Infinity;
+                        pts.forEach(p => {
+                            const t = (p.x - ax) * ux + (p.y - ay) * uy;
+                            if (t < tMin) tMin = t;
+                            if (t > tMax) tMax = t;
+                        });
+                        openWidthDraw = Math.max(0, Math.min(len, tMax) - Math.max(0, tMin));
+                        if (openWidthDraw < 1e-6) {
+                            openWidthDraw = Math.min(col.w || 0, col.h || 0) || Math.max(col.w || 0, col.h || 0) || 0.2 / cf;
+                        }
                     }
                 } else {
-                    const ox = Math.max(0, Math.min(wall.x + wall.w, col.x + col.w) - Math.max(wall.x, col.x));
-                    const oy = Math.max(0, Math.min(wall.y + wall.h, col.y + col.h) - Math.max(wall.y, col.y));
-                    openWidthDraw = Math.max(ox, oy);
+                    // Rect wall: intersection width along the longer wall axis
+                    const ox = Math.max(0, Math.min((wall.x || 0) + (wall.w || 0), (col.x || 0) + (col.w || 0)) - Math.max(wall.x || 0, col.x || 0));
+                    const oy = Math.max(0, Math.min((wall.y || 0) + (wall.h || 0), (col.y || 0) + (col.h || 0)) - Math.max(wall.y || 0, col.y || 0));
+                    const wallAlongX = Math.abs(wall.w || 0) >= Math.abs(wall.h || 0);
+                    openWidthDraw = wallAlongX ? ox : oy;
+                    if (openWidthDraw < 1e-6) openWidthDraw = Math.max(ox, oy);
                 }
                 const openWidthM = openWidthDraw * cf;
                 const colH = (col.zHeight != null && col.zHeight > 0) ? col.zHeight : wallH;
@@ -7285,9 +7467,24 @@
                 }
                 if (b.type === "slab" && a.type === "column") return computeOverlap(b, a);
 
-                // Slab ↔ Opening
+                // Slab ↔ Opening (prefer exact polygon intersection when vertices exist)
                 if (a.type === "slab" && isOpening(b)) {
-                    const areaDraw = aabbIntersectionArea(boxA, boxB);
+                    let areaDraw = 0;
+                    if (typeof planOverlapArea === "function") {
+                        areaDraw = planOverlapArea(a, b);
+                    }
+                    if (areaDraw < 1e-6) {
+                        areaDraw = aabbIntersectionArea(boxA, boxB);
+                    }
+                    // Parent-linked opening fully inside slab with weak AABB still counts
+                    if (areaDraw < 1e-6 && b.parentId != null && sameElementId(b.parentId, a.id)) {
+                        if (b.vertices && b.vertices.length >= 3) {
+                            const abs = b.vertices.map(v => ({ x: (b.x || 0) + (v.x || 0), y: (b.y || 0) + (v.y || 0) }));
+                            areaDraw = (typeof polygonArea === "function") ? polygonArea(abs) : ((b.w || 0) * (b.h || 0));
+                        } else {
+                            areaDraw = (b.w || 0) * (b.h || 0);
+                        }
+                    }
                     if (areaDraw < 1e-6) return null;
                     const areaM2 = areaDraw * cf * cf;
                     const slabDepth = getZHeight(a, 0.15);
@@ -7615,6 +7812,441 @@
             return Math.max(0, tMax - tMin);
         }
 
+        // =====================================================================
+        //  QA / ERROR DETECTION
+        //  Duplicates · missing wall gaps · dimension outliers · impossible dims
+        // =====================================================================
+        let lastQaIssues = [];
+        let qaFilterSev = 'all';
+
+        function qaElementCenter(el) {
+            if (!el) return null;
+            if (el.isLine && el.p1 && el.p2) {
+                return { x: (el.p1.x + el.p2.x) / 2, y: (el.p1.y + el.p2.y) / 2 };
+            }
+            if (el.vertices && el.vertices.length >= 3) {
+                let sx = 0, sy = 0;
+                el.vertices.forEach(v => { sx += (el.x || 0) + (v.x || 0); sy += (el.y || 0) + (v.y || 0); });
+                return { x: sx / el.vertices.length, y: sy / el.vertices.length };
+            }
+            return {
+                x: (el.x || 0) + (el.w || 0) / 2,
+                y: (el.y || 0) + (el.h || 0) / 2
+            };
+        }
+
+        function qaElementLengthDraw(el) {
+            if (!el) return 0;
+            if (el.isLine && el.p1 && el.p2) {
+                return Math.hypot(el.p2.x - el.p1.x, el.p2.y - el.p1.y);
+            }
+            if (el.length != null && isFinite(el.length)) return Number(el.length);
+            return Math.max(el.w || 0, el.h || 0);
+        }
+
+        function qaEndpointPairs(walls) {
+            // Returns list of { wall, which: 'p1'|'p2', x, y }
+            const pts = [];
+            walls.forEach(w => {
+                if (!w || w.hidden || !(w.isLine && w.p1 && w.p2)) return;
+                pts.push({ wall: w, which: 'p1', x: w.p1.x, y: w.p1.y });
+                pts.push({ wall: w, which: 'p2', x: w.p2.x, y: w.p2.y });
+            });
+            return pts;
+        }
+
+        /**
+         * Run full QA scan. Returns array of issue objects:
+         * { id, severity, category, title, message, elementIds[] }
+         */
+        function runQaScan(els) {
+            const issues = [];
+            const list = (els || elements || []).filter(e => e && !e.hidden);
+            if (!list.length) return issues;
+            const cf = (typeof calibrationFactor === 'number' && calibrationFactor > 0) ? calibrationFactor : 1;
+            let issueSeq = 0;
+            const push = (sev, category, title, message, elementIds) => {
+                issues.push({
+                    id: 'qa_' + (++issueSeq),
+                    severity: sev,
+                    category,
+                    title,
+                    message,
+                    elementIds: (elementIds || []).filter(Boolean)
+                });
+            };
+
+            // ----- 1. Duplicate elements (same type, near-identical geometry) -----
+            const DUP_CENTER_TOL = 0.15 / cf; // ~15 cm in drawing units
+            const DUP_LEN_TOL = 0.12 / cf;    // ~12 cm length difference
+            const DUP_ANGLE_TOL = 0.12;       // ~7° in radians for line direction
+            for (let i = 0; i < list.length; i++) {
+                for (let j = i + 1; j < list.length; j++) {
+                    const a = list[i], b = list[j];
+                    if (a.type !== b.type) continue;
+                    if (a.type === 'cutout' || a.type === 'door' || a.type === 'window' || a.isDeduction) {
+                        // openings: require tighter center match only
+                    }
+                    const ca = qaElementCenter(a), cb = qaElementCenter(b);
+                    if (!ca || !cb) continue;
+                    const dist = Math.hypot(ca.x - cb.x, ca.y - cb.y);
+                    if (dist > DUP_CENTER_TOL * 3) continue;
+
+                    let isDup = false;
+                    if (a.isLine && a.p1 && a.p2 && b.isLine && b.p1 && b.p2) {
+                        const la = qaElementLengthDraw(a), lb = qaElementLengthDraw(b);
+                        if (Math.abs(la - lb) > Math.max(DUP_LEN_TOL, 0.08 * Math.max(la, lb))) continue;
+                        // Direction similarity (absolute cos)
+                        const dax = a.p2.x - a.p1.x, day = a.p2.y - a.p1.y;
+                        const dbx = b.p2.x - b.p1.x, dby = b.p2.y - b.p1.y;
+                        const na = Math.hypot(dax, day) || 1, nb = Math.hypot(dbx, dby) || 1;
+                        const cos = Math.abs((dax * dbx + day * dby) / (na * nb));
+                        // Also check if endpoints are pairwise close (same or reversed)
+                        const e1 = Math.hypot(a.p1.x - b.p1.x, a.p1.y - b.p1.y);
+                        const e2 = Math.hypot(a.p2.x - b.p2.x, a.p2.y - b.p2.y);
+                        const e1r = Math.hypot(a.p1.x - b.p2.x, a.p1.y - b.p2.y);
+                        const e2r = Math.hypot(a.p2.x - b.p1.x, a.p2.y - b.p1.y);
+                        const endsMatch = (e1 < DUP_CENTER_TOL && e2 < DUP_CENTER_TOL) ||
+                            (e1r < DUP_CENTER_TOL && e2r < DUP_CENTER_TOL);
+                        if (cos > Math.cos(DUP_ANGLE_TOL) && (dist < DUP_CENTER_TOL || endsMatch)) isDup = true;
+                    } else {
+                        // Rect / polygon: center close + similar area
+                        let areaA = (a.w || 0) * (a.h || 0), areaB = (b.w || 0) * (b.h || 0);
+                        if (a.vertices && a.vertices.length >= 3 && typeof polygonArea === 'function') {
+                            areaA = polygonArea(a.vertices.map(v => ({ x: (a.x || 0) + v.x, y: (a.y || 0) + v.y })));
+                        }
+                        if (b.vertices && b.vertices.length >= 3 && typeof polygonArea === 'function') {
+                            areaB = polygonArea(b.vertices.map(v => ({ x: (b.x || 0) + v.x, y: (b.y || 0) + v.y })));
+                        }
+                        const maxArea = Math.max(areaA, areaB, 1e-6);
+                        if (dist < DUP_CENTER_TOL && Math.abs(areaA - areaB) / maxArea < 0.15) isDup = true;
+                    }
+                    if (isDup) {
+                        push('error', 'duplicate',
+                            'Duplicate ' + (a.type || 'element'),
+                            `"${a.label || a.type}" and "${b.label || b.type}" appear to be the same geometry (centers ${(dist * cf * 1000).toFixed(0)} mm apart).`,
+                            [a.id, b.id]);
+                    }
+                }
+            }
+
+            // ----- 2. Missing wall gaps (unconnected endpoints) -----
+            const walls = list.filter(e => e.type === 'wall' && e.isLine && e.p1 && e.p2);
+            if (walls.length >= 2) {
+                const GAP_CONNECT_TOL = 0.08 / cf;   // connected if within ~80 mm
+                const GAP_WARN_MIN = 0.08 / cf;
+                const GAP_WARN_MAX = 0.60 / cf;      // 8 cm – 60 cm suspicious gap
+                const endpoints = qaEndpointPairs(walls);
+                endpoints.forEach(ep => {
+                    // Is this endpoint connected to any other wall endpoint or segment?
+                    let connected = false;
+                    let nearestDist = Infinity;
+                    let nearestWall = null;
+                    for (let k = 0; k < endpoints.length; k++) {
+                        const other = endpoints[k];
+                        if (other.wall.id === ep.wall.id) continue;
+                        const d = Math.hypot(ep.x - other.x, ep.y - other.y);
+                        if (d < nearestDist) { nearestDist = d; nearestWall = other.wall; }
+                        if (d <= GAP_CONNECT_TOL) { connected = true; break; }
+                    }
+                    // Also check proximity to another wall's segment interior
+                    if (!connected) {
+                        for (let wi = 0; wi < walls.length; wi++) {
+                            const w = walls[wi];
+                            if (w.id === ep.wall.id) continue;
+                            if (typeof nearestPointOnSegment === 'function') {
+                                const np = nearestPointOnSegment(ep.x, ep.y, w.p1.x, w.p1.y, w.p2.x, w.p2.y);
+                                const d = Math.hypot(ep.x - np.x, ep.y - np.y);
+                                if (d < nearestDist) { nearestDist = d; nearestWall = w; }
+                                if (d <= GAP_CONNECT_TOL) { connected = true; break; }
+                            }
+                        }
+                    }
+                    if (connected) return;
+                    if (nearestDist >= GAP_WARN_MIN && nearestDist <= GAP_WARN_MAX && nearestWall) {
+                        push('warn', 'missing_wall',
+                            'Possible missing wall / gap',
+                            `Endpoint of "${ep.wall.label || 'Wall'}" is ${(nearestDist * cf * 1000).toFixed(0)} mm from "${nearestWall.label || 'Wall'}". May be a gap or misaligned junction.`,
+                            [ep.wall.id, nearestWall.id]);
+                    } else if (nearestDist > GAP_WARN_MAX && isFinite(nearestDist)) {
+                        // Free end — only report as info if wall is short (likely incomplete)
+                        const lenM = qaElementLengthDraw(ep.wall) * cf;
+                        if (lenM < 0.5) {
+                            push('info', 'missing_wall',
+                                'Short free-end wall',
+                                `"${ep.wall.label || 'Wall'}" is only ${lenM.toFixed(2)} m with an unconnected endpoint — check if drawing is incomplete.`,
+                                [ep.wall.id]);
+                        }
+                    }
+                });
+                // Deduplicate gap warnings that share the same pair of walls
+                const seenPairs = new Set();
+                for (let i = issues.length - 1; i >= 0; i--) {
+                    if (issues[i].category !== 'missing_wall') continue;
+                    const ids = (issues[i].elementIds || []).slice().sort().join('|');
+                    if (seenPairs.has(ids)) issues.splice(i, 1);
+                    else seenPairs.add(ids);
+                }
+            }
+
+            // ----- 3. Dimension outliers & impossible dimensions -----
+            // Wall thickness
+            const wallThks = walls.map(w => {
+                const t = (typeof w.thickness === 'number' && w.thickness > 0) ? w.thickness : null;
+                return t;
+            }).filter(t => t != null);
+            if (wallThks.length >= 2) {
+                const sorted = wallThks.slice().sort((a, b) => a - b);
+                const median = sorted[Math.floor(sorted.length / 2)];
+                walls.forEach(w => {
+                    const t = (typeof w.thickness === 'number' && w.thickness > 0) ? w.thickness : null;
+                    if (t == null) return;
+                    // Impossible: < 50 mm or > 600 mm for typical walls
+                    if (t < 0.05) {
+                        push('error', 'impossible_dim',
+                            'Impossible wall thickness',
+                            `"${w.label || 'Wall'}" thickness is ${(t * 1000).toFixed(0)} mm — below 50 mm is not a realistic masonry/concrete wall.`,
+                            [w.id]);
+                    } else if (t > 0.60) {
+                        push('warn', 'dim_outlier',
+                            'Unusual wall thickness',
+                            `"${w.label || 'Wall'}" thickness is ${(t * 1000).toFixed(0)} mm — check if this is intended (median is ${(median * 1000).toFixed(0)} mm).`,
+                            [w.id]);
+                    } else if (median > 0 && Math.abs(t - median) / median > 0.55 && Math.abs(t - median) > 0.08) {
+                        push('warn', 'dim_outlier',
+                            'Thickness inconsistent with neighbors',
+                            `"${w.label || 'Wall'}" is ${(t * 1000).toFixed(0)} mm vs median ${(median * 1000).toFixed(0)} mm — verify against drawing.`,
+                            [w.id]);
+                    }
+                });
+            }
+
+            // Wall length outliers (extremely short/long)
+            walls.forEach(w => {
+                const lenM = qaElementLengthDraw(w) * cf;
+                if (lenM > 0 && lenM < 0.15) {
+                    push('warn', 'dim_outlier',
+                        'Very short wall',
+                        `"${w.label || 'Wall'}" is only ${(lenM * 1000).toFixed(0)} mm long — may be a fragment or detection error.`,
+                        [w.id]);
+                }
+                if (lenM > 80) {
+                    push('info', 'dim_outlier',
+                        'Very long wall',
+                        `"${w.label || 'Wall'}" is ${lenM.toFixed(1)} m — confirm continuous run is intentional.`,
+                        [w.id]);
+                }
+                const h = (w.zHeight != null && w.zHeight > 0) ? w.zHeight : null;
+                if (h != null && (h < 1.5 || h > 6)) {
+                    push(h < 1.0 ? 'error' : 'warn', 'impossible_dim',
+                        'Unusual wall height',
+                        `"${w.label || 'Wall'}" height is ${h.toFixed(2)} m — typical storey height is 2.7–3.6 m.`,
+                        [w.id]);
+                }
+            });
+
+            // Column dimensions
+            list.filter(e => e.type === 'column').forEach(c => {
+                const wM = (c.w || 0) * cf, hM = (c.h || 0) * cf;
+                const side = Math.min(wM, hM) || Math.max(wM, hM);
+                if (side > 0 && side < 0.10) {
+                    push('warn', 'dim_outlier',
+                        'Very small column',
+                        `"${c.label || 'Column'}" plan size ~${(side * 1000).toFixed(0)} mm — check detection/scale.`,
+                        [c.id]);
+                }
+                if (side > 1.5) {
+                    push('info', 'dim_outlier',
+                        'Large column section',
+                        `"${c.label || 'Column'}" plan size ~${(side * 1000).toFixed(0)} mm.`,
+                        [c.id]);
+                }
+            });
+
+            // Beam thickness / depth
+            list.filter(e => e.type === 'beam').forEach(b => {
+                const thk = (typeof b.thickness === 'number' && b.thickness > 0) ? b.thickness : null;
+                const depth = (typeof b.zHeight === 'number' && b.zHeight > 0) ? b.zHeight : null;
+                if (thk != null && thk < 0.10) {
+                    push('warn', 'dim_outlier',
+                        'Narrow beam width',
+                        `"${b.label || 'Beam'}" width is ${(thk * 1000).toFixed(0)} mm.`,
+                        [b.id]);
+                }
+                if (depth != null && depth < 0.15) {
+                    push('warn', 'dim_outlier',
+                        'Shallow beam depth',
+                        `"${b.label || 'Beam'}" depth is ${(depth * 1000).toFixed(0)} mm.`,
+                        [b.id]);
+                }
+                if (depth != null && depth > 1.2) {
+                    push('info', 'dim_outlier',
+                        'Deep beam',
+                        `"${b.label || 'Beam'}" depth is ${depth.toFixed(2)} m — confirm.`,
+                        [b.id]);
+                }
+            });
+
+            // Slab thickness
+            list.filter(e => e.type === 'slab').forEach(s => {
+                const thk = (s.zHeight != null && s.zHeight > 0) ? s.zHeight : null;
+                if (thk != null && thk < 0.08) {
+                    push('warn', 'dim_outlier',
+                        'Thin slab',
+                        `"${s.label || 'Slab'}" thickness is ${(thk * 1000).toFixed(0)} mm — typical RC slabs are 100–200 mm.`,
+                        [s.id]);
+                }
+                if (thk != null && thk > 0.50) {
+                    push('info', 'dim_outlier',
+                        'Thick slab / raft',
+                        `"${s.label || 'Slab'}" thickness is ${(thk * 1000).toFixed(0)} mm.`,
+                        [s.id]);
+                }
+            });
+
+            // Zero / negative geometry
+            list.forEach(el => {
+                if (el.isLine && el.p1 && el.p2) {
+                    const len = Math.hypot(el.p2.x - el.p1.x, el.p2.y - el.p1.y);
+                    if (len < 1e-6) {
+                        push('error', 'impossible_dim',
+                            'Zero-length element',
+                            `"${el.label || el.type}" has coincident endpoints.`,
+                            [el.id]);
+                    }
+                } else if ((el.w != null && el.w < 0) || (el.h != null && el.h < 0)) {
+                    push('error', 'impossible_dim',
+                        'Negative dimensions',
+                        `"${el.label || el.type}" has negative width/height.`,
+                        [el.id]);
+                }
+            });
+
+            // Quantity outlier: wall net area dramatically different from gross (heavy deduction)
+            try {
+                walls.forEach(w => {
+                    if (typeof collectWallDeductions !== 'function') return;
+                    const lenM = qaElementLengthDraw(w) * cf;
+                    const wallH = (w.zHeight != null && w.zHeight > 0) ? w.zHeight : 3.0;
+                    const gross = lenM * wallH;
+                    if (gross < 0.5) return;
+                    const hits = collectWallDeductions(w) || [];
+                    const ded = hits.reduce((s, d) => s + (d.deductM2 || 0), 0);
+                    if (ded > gross * 0.85) {
+                        push('warn', 'dim_outlier',
+                            'Extreme wall deductions',
+                            `"${w.label || 'Wall'}" deductions (${ded.toFixed(2)} m²) remove >85% of gross face (${gross.toFixed(2)} m²) — check overlapping openings/columns.`,
+                            [w.id]);
+                    }
+                });
+            } catch (_) {}
+
+            // Sort: errors first, then warns, then info
+            const order = { error: 0, warn: 1, info: 2 };
+            issues.sort((a, b) => (order[a.severity] || 9) - (order[b.severity] || 9));
+            lastQaIssues = issues;
+            return issues;
+        }
+
+        function openQaModal() {
+            const modal = document.getElementById('qaModal');
+            if (!modal) return;
+            const issues = runQaScan(elements);
+            qaFilterSev = 'all';
+            renderQaModal(issues);
+            modal.classList.add('open');
+            // Update toolbar badge state
+            const btn = document.getElementById('btnQaScan');
+            if (btn) {
+                const hasErr = issues.some(i => i.severity === 'error' || i.severity === 'warn');
+                btn.classList.toggle('has-issues', hasErr);
+            }
+        }
+
+        function renderQaModal(issues) {
+            const summary = document.getElementById('qaSummary');
+            const listEl = document.getElementById('qaList');
+            const filters = document.getElementById('qaFilters');
+            if (!summary || !listEl) return;
+            const all = issues || lastQaIssues || [];
+            const nErr = all.filter(i => i.severity === 'error').length;
+            const nWarn = all.filter(i => i.severity === 'warn').length;
+            const nInfo = all.filter(i => i.severity === 'info').length;
+            if (!all.length) {
+                summary.innerHTML = '<span class="qa-chip ok">✓ No issues found</span>';
+            } else {
+                summary.innerHTML =
+                    (nErr ? `<span class="qa-chip error">${nErr} error${nErr > 1 ? 's' : ''}</span>` : '') +
+                    (nWarn ? `<span class="qa-chip warn">${nWarn} warning${nWarn > 1 ? 's' : ''}</span>` : '') +
+                    (nInfo ? `<span class="qa-chip info">${nInfo} info</span>` : '') +
+                    `<span class="qa-chip">${all.length} total</span>`;
+            }
+            if (filters) {
+                filters.querySelectorAll('[data-qa-sev]').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.qaSev === qaFilterSev);
+                });
+            }
+            const filtered = qaFilterSev === 'all' ? all : all.filter(i => i.severity === qaFilterSev);
+            if (!filtered.length) {
+                listEl.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:13px;">No issues in this category.</div>';
+                return;
+            }
+            listEl.innerHTML = filtered.map(issue => {
+                const idsLabel = (issue.elementIds || []).map(id => {
+                    const el = findElementById(id);
+                    return el ? (el.label || el.type + ' #' + id) : ('#' + id);
+                }).join(', ');
+                return `<div class="qa-item" data-qa-id="${issue.id}" data-element-ids="${(issue.elementIds || []).join(',')}">
+                    <span class="qa-sev ${issue.severity}">${issue.severity}</span>
+                    <div class="qa-body">
+                        <div class="qa-title">${escapeHtml(issue.title)}</div>
+                        <div class="qa-msg">${escapeHtml(issue.message)}</div>
+                        ${idsLabel ? `<div class="qa-ids">${escapeHtml(idsLabel)}</div>` : ''}
+                    </div>
+                </div>`;
+            }).join('');
+            listEl.querySelectorAll('.qa-item').forEach(item => {
+                item.addEventListener('click', function () {
+                    const ids = (item.dataset.elementIds || '').split(',').map(s => parseInt(s, 10)).filter(n => isFinite(n));
+                    if (!ids.length) return;
+                    selectedIds = expandSelectionWithChildren(ids);
+                    try {
+                        const el = findElementById(ids[0]);
+                        if (el && currentView === '2d') zoomToElement(el);
+                    } catch (_) {}
+                    renderAll();
+                    // Keep modal open so user can step through issues
+                });
+            });
+        }
+
+        function wireQaModal() {
+            const btn = document.getElementById('btnQaScan');
+            if (btn) btn.addEventListener('click', openQaModal);
+            const close = document.getElementById('qaModalClose');
+            const done = document.getElementById('qaModalDone');
+            const modal = document.getElementById('qaModal');
+            const closeFn = () => { if (modal) modal.classList.remove('open'); };
+            if (close) close.addEventListener('click', closeFn);
+            if (done) done.addEventListener('click', closeFn);
+            if (modal) modal.addEventListener('click', e => { if (e.target === modal) closeFn(); });
+            const rescan = document.getElementById('qaRescan');
+            if (rescan) rescan.addEventListener('click', () => {
+                const issues = runQaScan(elements);
+                renderQaModal(issues);
+                try { if (typeof showToast === 'function') showToast('QA scan complete: ' + issues.length + ' issue(s)', issues.some(i => i.severity === 'error') ? 'error' : 'success'); } catch (_) {}
+            });
+            const filters = document.getElementById('qaFilters');
+            if (filters) {
+                filters.querySelectorAll('[data-qa-sev]').forEach(btn => {
+                    btn.addEventListener('click', function () {
+                        qaFilterSev = btn.dataset.qaSev || 'all';
+                        renderQaModal(lastQaIssues);
+                    });
+                });
+            }
+        }
+
         function computeQuantities() {
             const rows = [];
             const cf = calibrationFactor;
@@ -7761,15 +8393,33 @@
                 const hits = getDeductionsOverlapping(el, openingsAll);
                 let deductVol = 0;
                 let dedRemarks = [];
+                const seenOpeningIds = new Set();
+                let cutArea = 0;
                 hits.forEach(({ opening: o, areaDraw }) => {
                     const overlapM2 = areaDraw * cf * cf;
-                    const dVol = overlapM2 * thk;
-                    deductVol += dVol;
-                    dedRemarks.push(`${o.label}(${dVol.toFixed(3)}m³)`);
+                    cutArea += overlapM2;
+                    deductVol += overlapM2 * thk;
+                    dedRemarks.push(`${o.label || o.type}(${overlapM2.toFixed(2)}m²)`);
+                    if (o && o.id != null) seenOpeningIds.add(o.id);
                 });
+                // Supplement with OverlapDeductionEngine slab-opening (covers cases AABB missed)
+                if (typeof OverlapDeductionEngine !== 'undefined' && el.type === 'slab') {
+                    try {
+                        const engHits = OverlapDeductionEngine.collectDeductionsFor(el, elements) || [];
+                        engHits.forEach(function (d) {
+                            if (!d || d.kind !== 'slab-opening') return;
+                            if (d.source && seenOpeningIds.has(d.source.id)) return;
+                            const areaM2 = d.deductM2 || 0;
+                            if (areaM2 <= 1e-9) return;
+                            cutArea += areaM2;
+                            deductVol += areaM2 * thk;
+                            dedRemarks.push(`${d.label || 'Opening'}(${areaM2.toFixed(2)}m²)`);
+                            if (d.source && d.source.id != null) seenOpeningIds.add(d.source.id);
+                        });
+                    } catch (_) {}
+                }
                 // Slab–slab union allocation
                 const ssOlDraw = slabSlabOl[el.id] || 0;
-                let cutArea = hits.reduce((s, h) => s + h.areaDraw * cf * cf, 0);
                 if (ssOlDraw > 0) {
                     const ssOlM2 = ssOlDraw * cf * cf;
                     cutArea += ssOlM2;
@@ -8203,6 +8853,60 @@
                         return;
                     }
                 }
+
+                // Review shortcuts (when not typing)
+                // A = Accept / mark QS_REVIEWED   X = Reject (delete)   N / P = next / prev unreviewed
+                if (!isEditing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    const k = e.key.toLowerCase();
+                    if (k === 'a' && selectedIds && selectedIds.length) {
+                        e.preventDefault();
+                        saveState();
+                        selectedIds.forEach(function (id) {
+                            const el = findElementById(id);
+                            if (el) {
+                                markElementReviewed(el);
+                                el.accepted = true;
+                            }
+                        });
+                        renderAll();
+                        try { if (typeof showToast === 'function') showToast('Accepted ' + selectedIds.length + ' element(s)', 'success'); } catch (_) {}
+                        return;
+                    }
+                    if (k === 'x' && selectedIds && selectedIds.length) {
+                        // Reject = delete selected (same as Delete but explicit for review flow)
+                        e.preventDefault();
+                        deleteSelected();
+                        return;
+                    }
+                    if (k === 'n' || k === 'p') {
+                        e.preventDefault();
+                        const queue = elements.filter(function (el) {
+                            if (el.hidden) return false;
+                            const st = getReviewStatus(el);
+                            return st === 'AI_GENERATED' || (reviewFilter === 'low_conf' && matchesReviewFilter(el));
+                        });
+                        if (!queue.length) {
+                            try { if (typeof showToast === 'function') showToast('No unreviewed AI elements', 'info'); } catch (_) {}
+                            return;
+                        }
+                        let idx = 0;
+                        if (selectedIds.length) {
+                            const cur = selectedIds[0];
+                            const found = queue.findIndex(function (el) { return el.id === cur; });
+                            if (found >= 0) idx = found;
+                        }
+                        if (k === 'n') idx = (idx + 1) % queue.length;
+                        else idx = (idx - 1 + queue.length) % queue.length;
+                        const next = queue[idx];
+                        selectedIds = expandSelectionWithChildren([next.id]);
+                        renderAll();
+                        try {
+                            if (currentView === '2d') zoomToElement(next);
+                        } catch (_) {}
+                        return;
+                    }
+                }
+
                 if (e.key === 'Escape' && !isEditing) {
                     if (polygonPoints.length > 0 || drawPreview || deductionLinePoints.length > 0) {
                         cancelDrawing();
@@ -8214,8 +8918,7 @@
                         drawCurrentWorld = null;
                         drawPreview = null;
                         document.getElementById('canvas2d').style.cursor = currentTool ? 'crosshair' : 'default';
-                        document.getElementById('statusMode').textContent = currentTool ? 'Draw: ' + currentTool :
-                            'Select';
+                        document.getElementById('statusMode').textContent = currentTool ? shortToolLabel(currentTool) : 'Select';
                         renderCanvas2D();
                         return;
                     }
@@ -8298,7 +9001,7 @@
                     calibratePreview = null;
                     renderCanvas2D();
                     if (calibratePoints.length === 1) {
-                        document.getElementById('statusMode').textContent = 'Calibrate: click 2nd point';
+                        document.getElementById('statusMode').textContent = 'Calibrate';
                     } else if (calibratePoints.length === 2) {
                         finishCalibration(calibratePoints[0], calibratePoints[1]);
                     }
@@ -8318,14 +9021,13 @@
                     measurePreview = null;
                     renderCanvas2D();
                     if (measurePoints.length === 1) {
-                        document.getElementById('statusMode').textContent = 'Measure: click 2nd point';
+                        document.getElementById('statusMode').textContent = 'Measure';
                     } else if (measurePoints.length === 2) {
                         const p1 = measurePoints[0],
                             p2 = measurePoints[1];
                         const dist = toMeters(Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2));
-                        document.getElementById('statusMode').textContent =
-                            `📏 ${dist.toFixed(2)} m — click again to measure another`;
-                        document.getElementById('statusCursor').textContent = `📏 ${dist.toFixed(2)} m`;
+                        document.getElementById('statusMode').textContent = 'Measure · ' + dist.toFixed(2) + ' m';
+                        document.getElementById('statusCursor').textContent = dist.toFixed(2) + ' m';
                         const label = document.getElementById('measureLabel');
                         label.textContent = dist.toFixed(2) + ' m';
                         label.style.display = 'block';
@@ -8390,15 +9092,7 @@
                     continuousTempPreview = null;
                     const n = deductionLinePoints.length;
                     const host = deductionParentId != null ? findElementById(deductionParentId) : null;
-                    if (n === 1) {
-                        document.getElementById('statusMode').textContent = host
-                            ? `Deduction on ${host.label}: START placed · click 2nd point · Enter finishes · Esc cancel`
-                            : `Deduction Wall: START point placed · move mouse for line · click 2nd point · Esc cancel`;
-                    } else {
-                        document.getElementById('statusMode').textContent = host
-                            ? `Deduction on ${host.label}: ${n} point(s) · Enter/Done to finish · Esc cancel`
-                            : `Deduction Wall: ${n} point(s) · click more · Enter/Done/double-click to finish · Esc cancel`;
-                    }
+                    document.getElementById('statusMode').textContent = 'Deduction · ' + n + ' pt';
                     renderCanvas2D();
                     return;
                 }
@@ -8414,9 +9108,8 @@
                     polygonTempLine = null;
                     polygonElementType = currentTool;
                     const n = polygonPoints.length;
-                    const hint = n >= 3 ? ' · Enter / Done to finish' : ' · need 3+ points';
                     document.getElementById('statusMode').textContent =
-                        `${currentTool}: ${n} vertices${hint}`;
+                        shortToolLabel(currentTool) + ' · ' + n + ' pt';
                     renderCanvas2D();
                     return;
                 }
@@ -8431,10 +9124,8 @@
                     polygonPoints.push(snapped);
                     continuousTempPreview = null;
                     const n = polygonPoints.length;
-                    const axisHint = ['wall', 'beam', 'column', 'slab'].includes(currentTool) && axisSnapKind
-                        ? ' · ' + axisSnapKind + ' snap' : '';
                     document.getElementById('statusMode').textContent =
-                        `${currentTool}: ${n} point(s) · click more · Enter/Done/double-click to finish${axisHint} · Esc cancel`;
+                        shortToolLabel(currentTool) + ' · ' + n + ' pt';
                     renderCanvas2D();
                     return;
                 }
@@ -8675,13 +9366,11 @@
                         const dist = Math.hypot(pt.x - last.x, pt.y - last.y);
                         const distM = toMeters(dist);
                         document.getElementById('statusMode').textContent =
-                            `Deduction Wall: ${deductionLinePoints.length} point(s) · next ${distM.toFixed(2)} m · click to place · Enter/Done to finish · Esc cancel`;
+                            'Deduction · ' + distM.toFixed(2) + ' m';
                     } else if (found) {
-                        document.getElementById('statusMode').textContent =
-                            `Hovering over ${found.label} — click to place START point of deduction`;
+                        document.getElementById('statusMode').textContent = 'Deduction';
                     } else {
-                        document.getElementById('statusMode').textContent =
-                            `Deduction Wall: click on a wall to place START point (or click anywhere)`;
+                        document.getElementById('statusMode').textContent = 'Deduction';
                     }
                     renderCanvas2D();
                     return;
@@ -8748,9 +9437,8 @@
                     measurePreview = { x: snapped.x, y: snapped.y };
                     const p1 = measurePoints[0];
                     const dist = toMeters(Math.hypot(snapped.x - p1.x, snapped.y - p1.y));
-                    document.getElementById('statusMode').textContent =
-                        `Measure: click 2nd point · ${dist.toFixed(2)} m`;
-                    document.getElementById('statusCursor').textContent = `📏 ${dist.toFixed(2)} m`;
+                    document.getElementById('statusMode').textContent = 'Measure · ' + dist.toFixed(2) + ' m';
+                    document.getElementById('statusCursor').textContent = dist.toFixed(2) + ' m';
                     renderCanvas2D();
                     return;
                 }
@@ -8773,7 +9461,7 @@
                     const axisHint = ['wall', 'beam', 'column', 'slab'].includes(currentTool) && axisSnapKind
                         ? ' · ' + axisSnapKind + ' snap' : '';
                     document.getElementById('statusMode').textContent =
-                        `${currentTool}: ${n} pts · next ${distM.toFixed(2)} m · Enter/Done to finish${axisHint}${snapHint}`;
+                        shortToolLabel(currentTool) + ' · ' + distM.toFixed(2) + ' m';
                     renderCanvas2D();
                     return;
                 }
@@ -8787,17 +9475,8 @@
                     polygonTempLine = { x1: last.x, y1: last.y, x2: snapped.x, y2: snapped.y };
                     const dist = Math.hypot(snapped.x - last.x, snapped.y - last.y);
                     const distM = toMeters(dist);
-                    const n = polygonPoints.length;
-                    const ready = n >= 3 ? ' · Enter / Done to finish' : ` · need ${3 - n} more`;
-                    const axisHint = ['column', 'slab'].includes(currentTool) && axisSnapKind
-                        ? ' · ' + axisSnapKind + ' snap' : '';
-                    let snapHint = '';
-                    if (snapCursorPoint && !e.altKey) {
-                        const el = elements.find(ee => ee.id === hoveredSnapId);
-                        snapHint = ' · ' + (formatSnapLabel(snapKind, el) || 'snapped');
-                    }
                     document.getElementById('statusMode').textContent =
-                        `${currentTool}: ${n} vertices · next seg ${distM.toFixed(2)} m${ready}${axisHint}${snapHint}`;
+                        shortToolLabel(currentTool) + ' · ' + distM.toFixed(2) + ' m';
                     renderCanvas2D();
                     return;
                 }
@@ -9033,7 +9712,7 @@
                     polygonPoints.pop();
                     polygonTempLine = null;
                     document.getElementById('statusMode').textContent =
-                        `${currentTool}: ${polygonPoints.length} vertices · right-click removes last`;
+                        shortToolLabel(currentTool) + ' · ' + polygonPoints.length + ' pt';
                     renderCanvas2D();
                 }
                 if ((currentTool === 'deduction_wall') &&
@@ -9041,8 +9720,7 @@
                     e.preventDefault();
                     deductionLinePoints = [];
                     deductionParentId = null;
-                    document.getElementById('statusMode').textContent =
-                        `Deduction Wall: click 1st point`;
+                    document.getElementById('statusMode').textContent = 'Deduction';
                     renderCanvas2D();
                 }
                 if ((currentTool === 'wall' || currentTool === 'beam') && polygonPoints.length > 0) {
@@ -9051,8 +9729,8 @@
                     continuousTempPreview = null;
                     document.getElementById('statusMode').textContent =
                         polygonPoints.length
-                            ? `${currentTool}: ${polygonPoints.length} pts · right-click removes last`
-                            : `${currentTool}: click points continuously`;
+                            ? shortToolLabel(currentTool) + ' · ' + polygonPoints.length + ' pt'
+                            : shortToolLabel(currentTool);
                     renderCanvas2D();
                 }
             });
@@ -9200,6 +9878,17 @@
          * active so the user can immediately start the next element of that type.
          * Exit only via Esc, Cancel, Select tool, or picking a different tool.
          */
+        function shortToolLabel(tool) {
+            if (!tool) return 'Select';
+            const map = {
+                wall: 'Wall', beam: 'Beam', slab: 'Slab', column: 'Column',
+                cutout: 'Cutout', deduction_wall: 'Deduction', measure: 'Measure',
+                calibrate: 'Calibrate', select: 'Select', pan: 'Pan',
+                door: 'Door', window: 'Window'
+            };
+            return map[tool] || (tool.charAt(0).toUpperCase() + tool.slice(1));
+        }
+
         function stayInDrawingTool(tool, readyMessage) {
             if (!tool) return;
             currentTool = tool;
@@ -9211,8 +9900,8 @@
             if (canvas) canvas.style.cursor = 'crosshair';
             const mode = document.getElementById('statusMode');
             if (mode) {
-                mode.textContent = readyMessage ||
-                    (tool.charAt(0).toUpperCase() + tool.slice(1) + ': click to start next · Esc to exit tool');
+                // Keep status compact — no long instructional copy
+                mode.textContent = readyMessage || shortToolLabel(tool);
             }
         }
 
@@ -9245,9 +9934,7 @@
                 return;
             }
             selectedIds = newIds;
-            stayInDrawingTool(type,
-                type.charAt(0).toUpperCase() + type.slice(1) +
-                ' saved · click to start next ' + type + ' · Enter finishes each · Esc exits tool');
+            stayInDrawingTool(type, shortToolLabel(type));
             renderAll();
             if (type === 'beam') {
                 setTimeout(function () { promptElevationAfterCreate(newIds); }, 50);
@@ -9365,8 +10052,7 @@
             pendingDeductionParentId = null;
             deductionTargetLocked = false;
             hoveredParentId = null;
-            stayInDrawingTool('deduction_wall',
-                `Deduction saved on ${parent.label} · hover another wall and click to deduct · Esc exits tool`);
+            stayInDrawingTool('deduction_wall', 'Deduction');
             renderAll();
         }
 
@@ -9438,8 +10124,7 @@
                             isPolygonClosed = false;
                             polygonElementType = null;
                             selectedIds = [parent.id];
-                            stayInDrawingTool('cutout',
-                                `Deduction saved on ${parent.label} · draw next opening · Esc exits tool`);
+                            stayInDrawingTool('cutout', 'Cutout');
                             renderAll();
                             return;
                         } else {
@@ -9456,9 +10141,7 @@
                     isPolygonClosed = false;
                     polygonElementType = null;
                     selectedIds = [el.id];
-                    stayInDrawingTool(keepTool,
-                        (keepTool.charAt(0).toUpperCase() + keepTool.slice(1)) +
-                        ' saved · click to start next · Enter finishes each · Esc exits tool');
+                    stayInDrawingTool(keepTool, shortToolLabel(keepTool));
                     renderAll();
                     if (el && (el.type === 'window' || el.type === 'door' || el.type === 'beam')) {
                         setTimeout(function () { promptElevationAfterCreate([el.id]); }, 50);
@@ -9501,7 +10184,7 @@
             const measureLabel = document.getElementById('measureLabel');
             if (measureLabel) measureLabel.style.display = 'none';
             if (currentTool === 'measure') {
-                document.getElementById('statusMode').textContent = 'Measure: click 1st point';
+                document.getElementById('statusMode').textContent = 'Measure';
             } else {
                 document.getElementById('statusMode').textContent = currentTool ?
                     (currentTool.charAt(0).toUpperCase() + currentTool.slice(1)) :
@@ -10561,14 +11244,87 @@
             document.body.removeChild(ta);
         }
 
-        function downloadProjectJsonFromExport() {
-            const data = {
+        function buildProjectPayload() {
+            return {
                 elements, projectOverrides, materialLibrary, layers, nextId, isConfirmed, calibrationFactor, projectInfo,
                 backgroundImage: backgroundImage ? {
                     src: backgroundImage.src, w: backgroundImage.w, h: backgroundImage.h,
                     opacity: backgroundImage.opacity, visible: backgroundImage.visible,
                 } : null,
             };
+        }
+
+        function applyProjectData(data) {
+            if (!data || !data.elements) return false;
+            try {
+                const normalized = normalizeElementIdentity(data.elements, data.nextId);
+                elements = normalized.elements;
+                nextId = normalized.nextId != null ? normalized.nextId : (data.nextId || nextId);
+                if (data.projectOverrides) projectOverrides = data.projectOverrides;
+                if (data.materialLibrary) materialLibrary = data.materialLibrary;
+                if (data.layers) layers = data.layers;
+                if (data.calibrationFactor != null) calibrationFactor = data.calibrationFactor;
+                if (data.projectInfo) projectInfo = data.projectInfo;
+                if (data.isConfirmed != null) isConfirmed = !!data.isConfirmed;
+                selectedIds = [];
+                if (data.backgroundImage && data.backgroundImage.src) {
+                    try {
+                        loadBackgroundFromSrc(data.backgroundImage.src, {
+                            w: data.backgroundImage.w,
+                            h: data.backgroundImage.h,
+                            opacity: data.backgroundImage.opacity
+                        });
+                    } catch (_) {}
+                }
+                try {
+                    const nameInput = document.getElementById('projectNameInput');
+                    if (nameInput && projectInfo) nameInput.value = projectInfo.name || '';
+                    const chip = document.getElementById('clientChip');
+                    if (chip && projectInfo) chip.textContent = 'Client: ' + (projectInfo.client || '—');
+                    const statusEl = document.getElementById('statusEdit');
+                    if (statusEl && projectInfo) statusEl.textContent = projectInfo.status || 'Draft';
+                } catch (_) {}
+                updateCalibDisplay();
+                setPreUploadControlsLocked(false);
+                renderAll();
+                return true;
+            } catch (err) {
+                console.error('applyProjectData failed', err);
+                return false;
+            }
+        }
+
+        function tryLoadStoredProject() {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                let pid = params.get('project');
+                if (!pid && typeof MCProjects !== 'undefined') pid = MCProjects.getActiveId();
+                if (!pid || typeof MCProjects === 'undefined') return false;
+                const record = MCProjects.get(pid);
+                if (!record || !record.current) return false;
+                MCProjects.setActiveId(pid);
+                return applyProjectData(record.current);
+            } catch (err) {
+                console.warn('tryLoadStoredProject', err);
+                return false;
+            }
+        }
+
+        function downloadProjectJsonFromExport() {
+            const data = buildProjectPayload();
+            try {
+                if (typeof MCProjects !== 'undefined') {
+                    const activeId = MCProjects.getActiveId();
+                    const result = MCProjects.save({
+                        id: activeId || undefined,
+                        name: (projectInfo && projectInfo.name) || 'Untitled Project',
+                        mode: 'pro',
+                        note: 'Export snapshot',
+                        data: data
+                    });
+                    if (result && result.id) MCProjects.setActiveId(result.id);
+                }
+            } catch (_) {}
             const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -10577,7 +11333,7 @@
             a.download = 'Project_' + safe + '_' + new Date().toISOString().slice(0, 10) + '.json';
             a.click();
             URL.revokeObjectURL(url);
-            showExportToast('Project JSON saved');
+            showExportToast('Project JSON saved · version recorded');
         }
 
         function setupExportModal() {
@@ -10659,7 +11415,7 @@
                             calibratePoints = [];
                             calibratePreview = null;
                             measurePoints = [];
-                            document.getElementById('statusMode').textContent = 'Calibrate: click 1st point';
+                            document.getElementById('statusMode').textContent = 'Calibrate';
                             document.getElementById('measureLabel').style.display = 'none';
                             document.getElementById('canvas2d').style.cursor = 'crosshair';
                         }
@@ -10689,7 +11445,7 @@
                             measurePoints = [];
                             measurePreview = null;
                             calibratePoints = [];
-                            document.getElementById('statusMode').textContent = 'Measure: click 1st point';
+                            document.getElementById('statusMode').textContent = 'Measure';
                             document.getElementById('measureLabel').style.display = 'none';
                             document.getElementById('canvas2d').style.cursor = 'crosshair';
                         }
@@ -10709,7 +11465,7 @@
                         document.getElementById('statusMode').textContent =
                             tool === 'select' ? 'Select' :
                             tool === 'pan' ? 'Pan' :
-                            tool === 'move' ? 'Move: drag selected objects' : tool;
+                            tool === 'move' ? 'Move' : shortToolLabel(tool);
                         document.getElementById('canvas2d').style.cursor =
                             tool === 'pan' ? 'grab' :
                             tool === 'select' || tool === 'move' ? 'default' : 'crosshair';
@@ -10764,8 +11520,7 @@
                         document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('tool-active'));
                         btn.classList.add('tool-active');
                         currentTool = tool;
-                        document.getElementById('statusMode').textContent =
-                            `${tool}: click vertices · Enter / Done to finish`;
+                        document.getElementById('statusMode').textContent = shortToolLabel(tool);
                         document.getElementById('canvas2d').style.cursor = 'crosshair';
                         selectedIds = [];
                         renderAll();
@@ -10816,9 +11571,7 @@
                         document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('tool-active'));
                         btn.classList.add('tool-active');
                         currentTool = tool;
-                        document.getElementById('statusMode').textContent = selectedWallForDedId != null
-                            ? `Deduction on ${selectedWallForDed.label}: click along the wall · Enter/Done to finish`
-                            : `Deduction Wall: click on a wall to snap, then continue points · Enter/Done to finish`;
+                        document.getElementById('statusMode').textContent = 'Deduction';
                         document.getElementById('canvas2d').style.cursor = 'crosshair';
                         selectedIds = [];
                         renderAll();
@@ -10852,8 +11605,7 @@
                         document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('tool-active'));
                         btn.classList.add('tool-active');
                         currentTool = tool;
-                        document.getElementById('statusMode').textContent =
-                            `${tool}: click points continuously · Enter/Done to finish`;
+                        document.getElementById('statusMode').textContent = shortToolLabel(tool);
                         document.getElementById('canvas2d').style.cursor = 'crosshair';
                         selectedIds = [];
                         renderAll();
@@ -10892,8 +11644,7 @@
                         document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('tool-active'));
                         btn.classList.add('tool-active');
                         currentTool = 'column';
-                        document.getElementById('statusMode').textContent =
-                            'column: click vertices · Enter / Done to finish';
+                        document.getElementById('statusMode').textContent = 'Column';
                         document.getElementById('canvas2d').style.cursor = 'crosshair';
                         selectedIds = [];
                         renderAll();
@@ -11042,6 +11793,38 @@
                     renderTree();
                 });
             }
+
+            // Review filters (Unreviewed / Low conf / AI only + type)
+            const reviewFiltersEl = document.getElementById('review-filters');
+            if (reviewFiltersEl) {
+                reviewFiltersEl.querySelectorAll('[data-rfilter]').forEach(function (btn) {
+                    btn.addEventListener('click', function () {
+                        reviewFilter = btn.dataset.rfilter || 'all';
+                        reviewFiltersEl.querySelectorAll('[data-rfilter]').forEach(function (b) {
+                            b.classList.toggle('active', b.dataset.rfilter === reviewFilter);
+                        });
+                        renderTree();
+                        renderCanvas2D();
+                    });
+                });
+                const typeSel = document.getElementById('typeFilterSelect');
+                if (typeSel) {
+                    typeSel.addEventListener('change', function () {
+                        typeFilter = this.value || '';
+                        renderTree();
+                        renderCanvas2D();
+                    });
+                }
+                const btnHeat = document.getElementById('btnHeatmap');
+                if (btnHeat) {
+                    btnHeat.addEventListener('click', function () {
+                        confidenceHeatmap = !confidenceHeatmap;
+                        btnHeat.classList.toggle('active', confidenceHeatmap);
+                        renderCanvas2D();
+                    });
+                }
+            }
+
             const btnFocusMode = document.getElementById('btnFocusMode');
             function setFocusMode(on) {
                 document.body.classList.toggle('focus-mode', !!on);
@@ -11209,18 +11992,33 @@
             // Save project (download JSON)
             const btnSave = document.getElementById('btnSave');
             if (btnSave) btnSave.addEventListener('click', () => {
-                const data = {
-                    elements, projectOverrides, materialLibrary, layers, nextId, isConfirmed, calibrationFactor, projectInfo,
-                    backgroundImage: backgroundImage ? {
-                        src: backgroundImage.src, w: backgroundImage.w, h: backgroundImage.h,
-                        opacity: backgroundImage.opacity, visible: backgroundImage.visible,
-                    } : null,
-                };
+                const data = buildProjectPayload();
+                // Persist to local project store + version history
+                try {
+                    if (typeof MCProjects !== 'undefined') {
+                        const activeId = MCProjects.getActiveId();
+                        const result = MCProjects.save({
+                            id: activeId || undefined,
+                            name: (projectInfo && projectInfo.name) || 'Untitled Project',
+                            mode: 'pro',
+                            note: 'Manual save',
+                            data: data
+                        });
+                        if (result && result.id) MCProjects.setActiveId(result.id);
+                        if (typeof showToast === 'function') {
+                            showToast('Project saved · ' + (result.versionCount || 0) + ' version(s) in history', 'success');
+                        }
+                    }
+                } catch (err) {
+                    console.warn('MCProjects save failed', err);
+                }
+                // Also download JSON backup
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = 'takeoff_project.json';
+                const safe = ((projectInfo && projectInfo.name) || 'takeoff').replace(/[^\w\-]+/g, '_').slice(0, 40);
+                a.download = 'Project_' + safe + '_' + new Date().toISOString().slice(0, 10) + '.json';
                 a.click();
                 URL.revokeObjectURL(url);
             });
@@ -11406,7 +12204,47 @@
                     }
                 });
             });
+            // Smart deduction rule toggles — compact card grid
+            html += `<div class="smart-deductions-panel">
+                <div class="sdp-head">
+                    <h3>Smart Deductions</h3>
+                    <p>Automatic geometric deductions in Live Quantities &amp; BOQ</p>
+                </div>
+                <div class="sdp-grid">`;
+            const ruleMeta = [
+                { key: 'wall_opening', label: 'Wall ↔ Opening', hint: 'Doors, windows, cutouts' },
+                { key: 'wall_column', label: 'Wall ↔ Column', hint: 'Column face from wall area' },
+                { key: 'wall_beam', label: 'Wall ↔ Beam', hint: 'Beam penetration' },
+                { key: 'wall_wall', label: 'Wall ↔ Wall', hint: 'Junctions & corners' },
+                { key: 'slab_beam', label: 'Slab ↔ Beam', hint: 'Beam footprint on slab' },
+                { key: 'slab_column', label: 'Slab ↔ Column', hint: 'Column footprint on slab' },
+                { key: 'slab_opening', label: 'Slab ↔ Opening', hint: 'Openings in slab plan' }
+            ];
+            let rules = {};
+            try {
+                if (typeof OverlapDeductionEngine !== 'undefined' && OverlapDeductionEngine.getRules) {
+                    rules = OverlapDeductionEngine.getRules().rulesEnabled || {};
+                }
+            } catch (_) {}
+            ruleMeta.forEach(function (r) {
+                const on = rules[r.key] !== false;
+                html += `<label class="sdp-row${on ? ' is-on' : ''}" for="dedRule_${r.key}">
+                    <input type="checkbox" id="dedRule_${r.key}" data-ded-rule="${r.key}" ${on ? 'checked' : ''} />
+                    <span class="sdp-switch" aria-hidden="true"></span>
+                    <span class="sdp-text">
+                        <span class="sdp-label">${r.label}</span>
+                        <span class="sdp-hint">${r.hint}</span>
+                    </span>
+                </label>`;
+            });
+            html += `</div></div>`;
             content.innerHTML = html;
+            // Toggle row highlight when checkbox changes
+            content.querySelectorAll('.sdp-row input').forEach(function (inp) {
+                inp.addEventListener('change', function () {
+                    inp.closest('.sdp-row').classList.toggle('is-on', inp.checked);
+                });
+            });
         }
 
         document.getElementById('modalClose').addEventListener('click', () => document.getElementById('settingsModal')
@@ -11427,9 +12265,15 @@
                         projectOverrides[group][key][parseInt(index)] = val;
                     } else projectOverrides[group][key] = val;
                 }
+                // Smart deduction rule checkboxes
+                if (inp.dataset.dedRule && typeof OverlapDeductionEngine !== 'undefined' && OverlapDeductionEngine.setRuleEnabled) {
+                    OverlapDeductionEngine.setRuleEnabled(inp.dataset.dedRule, inp.checked);
+                }
             });
             document.getElementById('settingsModal').classList.remove('open');
+            try { if (typeof OverlapDeductionEngine !== 'undefined' && OverlapDeductionEngine.invalidate) OverlapDeductionEngine.invalidate(); } catch (_) {}
             renderQuantityTable();
+            try { renderCanvas2D(); } catch (_) {}
         });
 
 
@@ -11542,6 +12386,63 @@
         });
 
         // ----- RENDER ALL -----
+        function updateFabSelection() {
+            const fab = document.getElementById('fabSelection');
+            const countEl = document.getElementById('fabCount');
+            if (!fab) return;
+            const n = (selectedIds && selectedIds.length) || 0;
+            if (n > 0 && !isConfirmed) {
+                fab.classList.add('visible');
+                document.body.classList.add('has-selection');
+                if (countEl) countEl.textContent = n + ' selected';
+            } else {
+                fab.classList.remove('visible');
+                document.body.classList.remove('has-selection');
+            }
+        }
+
+        function wireFabSelection() {
+            const fabAccept = document.getElementById('fabAccept');
+            const fabProps = document.getElementById('fabProps');
+            const fabDuplicate = document.getElementById('fabDuplicate');
+            const fabHide = document.getElementById('fabHide');
+            const fabDelete = document.getElementById('fabDelete');
+            if (fabAccept) fabAccept.addEventListener('click', function () {
+                if (!selectedIds.length) return;
+                saveState();
+                selectedIds.forEach(function (id) {
+                    const el = findElementById(id);
+                    if (el) { markElementReviewed(el); el.accepted = true; }
+                });
+                renderAll();
+                try { if (typeof showToast === 'function') showToast('Accepted ' + selectedIds.length + ' element(s)', 'success'); } catch (_) {}
+            });
+            if (fabProps) fabProps.addEventListener('click', function () {
+                const btn = document.getElementById('btnViewProps');
+                if (btn) btn.click();
+                else {
+                    const rp = document.getElementById('right-panel');
+                    if (rp) rp.classList.add('open');
+                }
+            });
+            if (fabDuplicate) fabDuplicate.addEventListener('click', function () {
+                if (typeof duplicateSelected === 'function') duplicateSelected();
+            });
+            if (fabHide) fabHide.addEventListener('click', function () {
+                if (!selectedIds.length) return;
+                saveState();
+                selectedIds.forEach(function (id) {
+                    const el = findElementById(id);
+                    if (el) el.hidden = true;
+                });
+                selectedIds = [];
+                renderAll();
+            });
+            if (fabDelete) fabDelete.addEventListener('click', function () {
+                if (typeof deleteSelected === 'function') deleteSelected();
+            });
+        }
+
         function renderAll() {
             renderTree();
             renderCanvas2D();
@@ -11549,6 +12450,7 @@
             renderQuantityTable();
             renderLayers();
             updateStatusBarMeta();
+            updateFabSelection();
                         if (currentView === '3d' && threeInitialized) buildThreeScene();
             scheduleResearchQuantitySync();
         }
@@ -11610,14 +12512,35 @@
         }
 
         // ----- TREE RENDER -----
+        function matchesReviewFilter(el) {
+            if (!el) return false;
+            if (typeFilter && el.type !== typeFilter) return false;
+            const status = getReviewStatus(el);
+            const conf = getConfidencePercent(el); // 0-100 or null
+            const conf01 = conf != null ? conf / 100 : null;
+            if (reviewFilter === 'unreviewed') {
+                return status === 'AI_GENERATED' || (status === 'MANUAL' && el.source === 'AI');
+            }
+            if (reviewFilter === 'low_conf') {
+                return conf01 != null && conf01 < LOW_CONFIDENCE_THRESHOLD;
+            }
+            if (reviewFilter === 'ai') {
+                const src = getElementSource(el);
+                return src === 'AI' || src === 'AI_EDITED' || status === 'AI_GENERATED';
+            }
+            return true; // 'all'
+        }
+
         function renderTree() {
             const container = document.getElementById('tree-container');
+            if (!container) return;
             const cats = {};
             const layerFilter = currentLayer === 'All' ? null : currentLayer;
             const query = String(elementSearchQuery || '').trim().toLowerCase();
             const filtered = elements.filter(el => {
                 const layerMatch = layerFilter === null || el.layer === layerFilter || el.layer === 'All';
                 if (!layerMatch) return false;
+                if (!matchesReviewFilter(el)) return false;
                 if (!query) return true;
                 return [el.label, el.type, el.material, el.room, el.location, el.id]
                     .some(value => String(value == null ? '' : value).toLowerCase().includes(query));
@@ -11629,7 +12552,7 @@
             });
             let html = '';
             for (const [cat, items] of Object.entries(cats)) {
-                html += `<div class="tree-category">${cat}</div>`;
+                html += `<div class="tree-category">${cat} <span style="font-weight:400;color:var(--text-secondary);">(${items.length})</span></div>`;
                 items.forEach(function (el) {
                     const active = isSelectedId(el.id) ? 'active' : '';
                     const src = getElementSource(el);
@@ -11637,16 +12560,48 @@
                     const badgeLabel = src === 'AI' ? 'AI' : (src === 'AI_EDITED' ? 'AI' : (el.material ? '💰' : 'M'));
                     const lock = el.locked ? '<i class="fas fa-lock lock-icon"></i>' : '';
                     const hidden = el.hidden ? ' style="opacity:0.4;"' : '';
+                    // Confidence badge
+                    let confHtml = '';
+                    const confPct = getConfidencePercent(el);
+                    if (confPct != null) {
+                        const band = confPct >= 80 ? 'high' : (confPct >= 60 ? 'mid' : 'low');
+                        confHtml = `<span class="conf-badge ${band}" title="AI confidence">${confPct}%</span>`;
+                    }
+                    // Review status badge
+                    const st = getReviewStatus(el);
+                    let revHtml = '';
+                    if (st === 'AI_GENERATED') revHtml = '<span class="review-badge ai_gen">AI</span>';
+                    else if (st === 'QS_REVIEWED') revHtml = '<span class="review-badge qs">QS</span>';
+                    else if (st === 'FINAL') revHtml = '<span class="review-badge final">✓</span>';
+                    let qaHtml = '';
+                    try {
+                        if (lastQaIssues && lastQaIssues.length) {
+                            const hit = lastQaIssues.find(iss => (iss.elementIds || []).some(id => sameElementId(id, el.id)));
+                            if (hit) {
+                                const icon = hit.severity === 'error' ? '⚠' : (hit.severity === 'warn' ? '!' : 'i');
+                                qaHtml = `<span class="qa-flag" title="${escapeHtml(hit.title)}">${icon}</span>`;
+                            }
+                        }
+                    } catch (_) {}
                     html += `<div class="tree-item ${active}" data-id="${el.id}"${hidden}>
                 <span class="color-dot" style="background:${escapeHtml(String(el.color || '#888'))}"></span>
                 <span>${escapeHtml(String(el.label || el.type || ''))}</span>
                 <span class="badge ${badge}">${badgeLabel}</span>
+                ${confHtml}${revHtml}${qaHtml}
                 ${lock}
               </div>`;
                 });
             }
+            if (!html) {
+                html = '<div style="padding:16px 12px;font-size:12px;color:var(--text-secondary);text-align:center;">No elements match the current filters.</div>';
+            }
             container.innerHTML = html;
-            document.getElementById('elemCount').textContent = elements.length;
+            const countEl = document.getElementById('elemCount');
+            if (countEl) {
+                const total = elements.length;
+                const shown = filtered.length;
+                countEl.textContent = (reviewFilter !== 'all' || typeFilter) ? (shown + '/' + total) : String(total);
+            }
             container.querySelectorAll('.tree-item').forEach(function (item) {
                 item.addEventListener('click', function (e) {
                     if (isConfirmed) return;
@@ -11662,7 +12617,6 @@
                         }
                     }
                     renderAll();
-                    // Single primary selection → frame it in 2D
                     try {
                         if (typeof currentView !== 'string' || currentView === '2d') {
                             zoomToElement(findElementById(id));
@@ -12610,7 +13564,17 @@
                 try { renderAll(); positionArrowButtons(); } catch (_) {}
             });
             try { wireAiReviewModal(); } catch (_) {}
+            try { wireQaModal(); } catch (_) {}
+            try { wireFabSelection(); } catch (_) {}
             setTimeout(() => document.getElementById('btnZoomFit').click(), 300);
+            // Remove legacy bottom hint that overlapped FAB / Live Quantities
+            try {
+                document.querySelectorAll('.overlay-label').forEach(function (el) {
+                    el.style.display = 'none';
+                    el.textContent = '';
+                    el.setAttribute('aria-hidden', 'true');
+                });
+            } catch (_) {}
             console.log('✅ Init complete.');
 
             // Only load a drawing when explicitly requested (?file=) or when coming from Simple Mode (pending flag).
@@ -12624,6 +13588,10 @@
                 try { snapshotPending = sessionStorage.getItem('mc-pro-full-snapshot-pending') === '1'; } catch (_) {}
                 if (fileParam) {
                     loadDrawingFromUrl(fileParam);
+                } else if (params.get('project') || (typeof MCProjects !== 'undefined' && MCProjects.getActiveId() && !transferPending && !snapshotPending)) {
+                    if (tryLoadStoredProject()) {
+                        try { if (typeof showToast === 'function') showToast('Project restored from dashboard', 'success'); } catch (_) {}
+                    }
                 } else if (snapshotPending) {
                     // Returning from Simple after Pro work — restore full geometry (cutouts, polylines, parents)
                     const finishSnap = function (snap) {
