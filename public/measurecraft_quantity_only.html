@@ -260,15 +260,17 @@
 
       <!-- STEP 4 -->
       <div class="step-panel" id="panel-4">
-        <div class="card">
-          <h3>Review detected elements</h3>
-          <p class="hint">Toggle items off if the AI was wrong. Only checked items count toward quantities.</p>
+        <div class="card review-card">
+          <div class="review-head">
+            <h3>Review detected elements</h3>
+            <p class="hint">Toggle items off if the AI was wrong. Only checked items count toward quantities.</p>
+          </div>
           <div id="elements-list-wrap">
             <div class="empty-msg">No elements yet. Run AI detection first.</div>
           </div>
           <div class="legend" id="type-legend"></div>
         </div>
-        <div class="btn-row">
+        <div class="btn-row" style="display:none">
           <button type="button" class="btn btn-sm" id="btn-accept-all">Accept all</button>
           <button type="button" class="btn btn-sm" id="btn-reject-all">Reject all</button>
         </div>
