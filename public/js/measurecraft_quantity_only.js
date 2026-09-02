@@ -1141,38 +1141,91 @@
         wrap.innerHTML = '<div class="empty-msg">No elements yet. Run AI detection first.</div>';
         return;
       }
-      let html = '<table class="data-table"><thead><tr><th></th><th>Type</th><th>Label</th><th>Confidence</th><th>Status</th><th>Size</th><th>Opening h (m)</th><th>Sill / soffit (m)</th></tr></thead><tbody>';
+
+      const accepted = state.elements.filter(e => e.accepted).length;
+      const total = state.elements.length;
+
+      let html = '';
+      html += '<div class="review-toolbar">' +
+        '<div class="review-count"><strong>' + accepted + '</strong> of ' + total + ' accepted</div>' +
+        '<div class="review-actions">' +
+          '<button type="button" class="btn btn-sm" id="btn-accept-all-inline">Accept all</button>' +
+          '<button type="button" class="btn btn-sm" id="btn-reject-all-inline">Reject all</button>' +
+        '</div>' +
+      '</div>';
+
+      html += '<div class="elem-list">';
       state.elements.forEach(el => {
         const color = TYPE_COLORS[el.type] || '#888';
         const confidence = getSimpleConfidencePercent(el);
         const band = confidenceBand(confidence);
         const reviewText = getSimpleReviewLabel(el);
-        const rowBg = el.accepted ? 'background:rgba(22,163,74,0.06)' : (confidence != null && confidence < 70 ? 'background:rgba(220,38,38,0.05)' : '');
         const needsSill = el.type === 'window' || el.type === 'door' || el.type === 'cutout' || el.type === 'opening';
         const needsSoffit = el.type === 'beam';
+        const needsHeight = needsSill || el.type === 'wall' || el.type === 'column' || el.type === 'slab' || el.type === 'beam';
         const openH = el.height != null ? el.height : (el.type === 'window' ? 1.2 : (el.type === 'door' ? 2.1 : ''));
         const sillDef = el.type === 'window' ? 0.9 : 0;
         const elev = needsSoffit
           ? (el.soffitHeight != null ? el.soffitHeight : '')
           : (el.sillHeight != null ? el.sillHeight : (needsSill ? sillDef : ''));
         const elevLabel = needsSoffit ? 'soffit' : 'sill';
-        html += '<tr data-id="' + el.id + '" style="' + rowBg + '"><td><input type="checkbox" data-id="' + el.id + '" ' + (el.accepted ? 'checked' : '') + ' title="Accept / include in quantities"></td>' +
-          '<td><span class="type-dot" style="background:' + color + '"></span>' + escapeHtml(el.type) + '</td>' +
-          '<td>' + escapeHtml(el.label || '') + '</td>' +
-          '<td><span style="display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;font-weight:600;color:#fff;background:' + band.color + '">' + band.label + '</span></td>' +
-          '<td style="font-size:12px;color:#64748b">' + escapeHtml(reviewText) + '</td>' +
-          '<td>' + Math.round(el.w) + '×' + Math.round(el.h) + '</td>' +
-          '<td>' + (needsSill || el.type === 'wall' || el.type === 'column' || el.type === 'slab' || el.type === 'beam'
-            ? '<input type="number" step="0.01" min="0" style="width:72px" data-field="height" data-id="' + el.id + '" value="' + (openH !== '' ? openH : '') + '" title="Height / depth (m)">'
-            : '—') + '</td>' +
-          '<td>' + (needsSill || needsSoffit
-            ? '<input type="number" step="0.01" min="0" style="width:72px" data-field="' + elevLabel + '" data-id="' + el.id + '" value="' + elev + '" title="' + (needsSoffit ? 'Soffit height above FFL (m)' : 'Sill height above FFL (m)') + '">'
-            : '—') + '</td>' +
-          '</tr>';
+        const elevTitle = needsSoffit ? 'Soffit height above FFL (m)' : 'Sill height above FFL (m)';
+        const sizeTxt = Math.round(el.w) + '×' + Math.round(el.h);
+        const cardCls = 'elem-card' + (el.accepted ? ' is-accepted' : '') + (confidence != null && confidence < 70 && !el.accepted ? ' is-low' : '');
+
+        html += '<article class="' + cardCls + '" data-id="' + el.id + '">';
+        html += '<label class="elem-check" title="Accept / include in quantities">' +
+          '<input type="checkbox" data-id="' + el.id + '" ' + (el.accepted ? 'checked' : '') + '>' +
+          '<span class="checkmark"></span>' +
+        '</label>';
+        html += '<div class="elem-body">';
+        html += '<div class="elem-top">' +
+          '<div class="elem-identity">' +
+            '<span class="type-chip" style="--type-color:' + color + '"><i style="background:' + color + '"></i>' + escapeHtml(el.type) + '</span>' +
+            '<span class="elem-label">' + escapeHtml(el.label || el.type) + '</span>' +
+          '</div>' +
+          '<span class="conf-pill" style="background:' + band.color + '">' + band.label + '</span>' +
+        '</div>';
+        html += '<div class="elem-meta">' +
+          '<span class="meta-item"><span class="meta-k">Status</span><span class="meta-v">' + escapeHtml(reviewText) + '</span></span>' +
+          '<span class="meta-item"><span class="meta-k">Size</span><span class="meta-v mono">' + sizeTxt + '</span></span>' +
+        '</div>';
+
+        if (needsHeight || needsSill || needsSoffit) {
+          html += '<div class="elem-fields">';
+          if (needsHeight) {
+            html += '<label class="field-mini"><span>Height (m)</span>' +
+              '<input type="number" step="0.01" min="0" data-field="height" data-id="' + el.id + '" value="' + (openH !== '' ? openH : '') + '" title="Height / depth (m)">' +
+            '</label>';
+          }
+          if (needsSill || needsSoffit) {
+            html += '<label class="field-mini"><span>' + (needsSoffit ? 'Soffit (m)' : 'Sill (m)') + '</span>' +
+              '<input type="number" step="0.01" min="0" data-field="' + elevLabel + '" data-id="' + el.id + '" value="' + elev + '" title="' + elevTitle + '">' +
+            '</label>';
+          }
+          html += '</div>';
+        }
+
+        html += '</div></article>';
       });
-      html += '</tbody></table>';
-      html += '<p class="hint" style="margin-top:8px;">Confidence is a triage aid only (not accuracy). <span style="color:#16a34a;font-weight:600">≥90% High</span> · <span style="color:#d97706;font-weight:600">70–89% Review</span> · <span style="color:#dc2626;font-weight:600">&lt;70% Check</span>. Tick the checkbox to Accept. Confirm <strong>sill height</strong> for windows/doors and <strong>soffit</strong> for beams.</p>';
+      html += '</div>';
+
+      html += '<div class="review-footer-note">' +
+        '<div class="conf-legend">' +
+          '<span class="cl-item"><i style="background:#16a34a"></i>≥90% High</span>' +
+          '<span class="cl-item"><i style="background:#d97706"></i>70–89% Review</span>' +
+          '<span class="cl-item"><i style="background:#dc2626"></i>&lt;70% Check</span>' +
+        '</div>' +
+        '<p>Confidence is a triage aid only. Tick to accept. Confirm sill for windows/doors and soffit for beams.</p>' +
+      '</div>';
+
       wrap.innerHTML = html;
+
+      const acceptInline = $('btn-accept-all-inline');
+      const rejectInline = $('btn-reject-all-inline');
+      if (acceptInline) acceptInline.addEventListener('click', () => { $('btn-accept-all').click(); });
+      if (rejectInline) rejectInline.addEventListener('click', () => { $('btn-reject-all').click(); });
+
       wrap.querySelectorAll('input[type=checkbox]').forEach(cb => {
         cb.addEventListener('change', () => {
           const el = state.elements.find(e => e.id === cb.dataset.id);
@@ -1211,9 +1264,12 @@
           updateSummary();
         });
       });
-      $('type-legend').innerHTML = Object.keys(TYPE_COLORS).map(t =>
-        '<span><i class="type-dot" style="background:' + TYPE_COLORS[t] + '"></i>' + t + '</span>'
-      ).join('');
+      const legend = $('type-legend');
+      if (legend) {
+        legend.innerHTML = Object.keys(TYPE_COLORS).map(t =>
+          '<span><i class="type-dot" style="background:' + TYPE_COLORS[t] + '"></i>' + t + '</span>'
+        ).join('');
+      }
     }
 
     $('btn-accept-all').addEventListener('click', () => {
