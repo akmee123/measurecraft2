@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MeasureCraft · Projects</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #F5F2EA;
+      --card: #ffffff;
+      --soft: #EFEBE0;
+      --hover: #EBE6D9;
+      --text: #221F1C;
+      --text2: #6B6155;
+      --text3: #9C9284;
+      --border: #DED5C2;
+      --accent: #B8863B;
+      --accent-soft: #F8F2E7;
+      --success: #2F7D4F;
+      --danger: #B23A2E;
+      --radius: 14px;
+      --shadow: 0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
+      --shadow-md: 0 8px 24px rgba(15,23,42,0.08);
+      --font: 'Work Sans', system-ui, sans-serif;
+      --display: 'Fraunces', serif;
+    }
+    [data-theme="dark"] {
+      --bg: #16140F;
+      --card: #201D17;
+      --soft: #1B1812;
+      --hover: #2A251D;
+      --text: #F7F1E6;
+      --text2: #C9BFAE;
+      --text3: #A89E8E;
+      --border: #4A4338;
+      --accent: #D0A257;
+      --accent-soft: #241E14;
+      --success: #4FA26E;
+      --danger: #E07A6C;
+      --shadow: 0 1px 3px rgba(0,0,0,0.3);
+      --shadow-md: 0 8px 24px rgba(0,0,0,0.35);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 28px; background: var(--card); border-bottom: 1px solid var(--border);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; }
+    .brand img { width: 40px; height: 40px; border-radius: 10px; }
+    .brand h1 { font-family: var(--display); font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
+    .brand span { display: block; font-size: 11px; color: var(--text3); font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; }
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+    .header-actions a, .header-actions button {
+      font-size: 13px; font-weight: 600; padding: 8px 14px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--soft); color: var(--text);
+      text-decoration: none; cursor: pointer; font-family: inherit;
+    }
+    .header-actions a.primary, .header-actions button.primary {
+      background: var(--accent); color: #fff; border-color: var(--accent);
+    }
+    .header-actions a:hover, .header-actions button:hover { background: var(--hover); }
+    .header-actions a.primary:hover, .header-actions button.primary:hover { filter: brightness(1.05); }
+
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; }
+    .hero { margin-bottom: 28px; }
+    .hero h2 { font-family: var(--display); font-size: 28px; font-weight: 600; letter-spacing: -0.03em; margin-bottom: 6px; }
+    .hero p { color: var(--text2); font-size: 14px; }
+
+    .toolbar {
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+      margin-bottom: 20px;
+    }
+    .toolbar input {
+      flex: 1; min-width: 180px; height: 38px; padding: 0 14px;
+      border: 1px solid var(--border); border-radius: 10px;
+      background: var(--card); color: var(--text); font: inherit; font-size: 13px;
+    }
+    .toolbar input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .toolbar select {
+      height: 38px; padding: 0 12px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--card); color: var(--text); font: inherit; font-size: 13px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 16px;
+    }
+    .project-card {
+      background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 18px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px;
+      transition: box-shadow 0.2s ease, border-color 0.15s;
+    }
+    .project-card:hover { box-shadow: var(--shadow-md); border-color: var(--accent); }
+    .project-card .name { font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+    .project-card .meta { font-size: 12px; color: var(--text2); line-height: 1.5; }
+    .project-card .badges { display: flex; flex-wrap: wrap; gap: 6px; }
+    .badge {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+      padding: 3px 8px; border-radius: 999px; background: var(--soft); color: var(--text2);
+    }
+    .badge.pro { background: #e0e7ff; color: #3730a3; }
+    .badge.simple { background: #dcfce7; color: #166534; }
+    [data-theme="dark"] .badge.pro { background: #1e1b4b; color: #a5b4fc; }
+    [data-theme="dark"] .badge.simple { background: #12271A; color: #4FA26E; }
+    .project-card .actions { display: flex; gap: 6px; margin-top: auto; padding-top: 8px; }
+    .project-card .actions button {
+      flex: 1; height: 34px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--soft); color: var(--text); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .project-card .actions button.open { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .project-card .actions button.danger { color: var(--danger); }
+    .project-card .actions button:hover { filter: brightness(0.97); }
+
+    .empty {
+      text-align: center; padding: 48px 24px; color: var(--text2);
+      background: var(--card); border: 1px dashed var(--border); border-radius: var(--radius);
+    }
+    .empty strong { display: block; color: var(--text); font-size: 16px; margin-bottom: 6px; }
+
+    /* Version drawer */
+    .drawer-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.4);
+      z-index: 100; backdrop-filter: blur(6px);
+    }
+    .drawer-overlay.open { display: block; }
+    .drawer {
+      position: fixed; top: 0; right: 0; width: min(400px, 100vw); height: 100%;
+      background: var(--card); border-left: 1px solid var(--border);
+      box-shadow: var(--shadow-md); z-index: 101; transform: translateX(100%);
+      transition: transform 0.28s cubic-bezier(0.22,1,0.36,1);
+      display: flex; flex-direction: column;
+    }
+    .drawer-overlay.open .drawer { transform: translateX(0); }
+    .drawer-head {
+      padding: 18px 20px; border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .drawer-head h3 { font-size: 15px; font-weight: 650; }
+    .drawer-head button {
+      width: 32px; height: 32px; border: none; background: var(--soft);
+      border-radius: 8px; cursor: pointer; font-size: 18px; color: var(--text2);
+    }
+    .drawer-body { flex: 1; overflow-y: auto; padding: 12px 16px; }
+    .ver-item {
+      padding: 12px; border: 1px solid var(--border); border-radius: 10px;
+      margin-bottom: 8px; background: var(--soft);
+    }
+    .ver-item .when { font-size: 12px; font-weight: 600; }
+    .ver-item .note { font-size: 12px; color: var(--text2); margin-top: 2px; }
+    .ver-item button {
+      margin-top: 8px; height: 30px; padding: 0 12px; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--card); font: inherit;
+      font-size: 12px; font-weight: 600; cursor: pointer; color: var(--text);
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <a class="brand" href="mode-select.html">
+      <img src="logo-icon.png" alt="MeasureCraft" />
+      <div>
+        <h1>MeasureCraft</h1>
+        <span>Project dashboard</span>
+      </div>
+    </a>
+    <div class="header-actions">
+      <button type="button" id="btnTheme" title="Toggle theme">Theme</button>
+      <a href="mode-select.html">Modes</a>
+      <a class="primary" href="takeoff_pro.html">New Pro project</a>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="hero">
+      <h2>Your projects</h2>
+      <p>Saved takeoffs with version history (stored in this browser). Export JSON from Pro to create versions.</p>
+    </div>
+
+    <div class="toolbar">
+      <input type="search" id="search" placeholder="Search by name or client…" />
+      <select id="filterMode">
+        <option value="">All modes</option>
+        <option value="pro">Professional</option>
+        <option value="simple">Simple</option>
+      </select>
+    </div>
+
+    <div class="grid" id="grid"></div>
+    <div class="empty" id="empty" style="display:none;">
+      <strong>No projects yet</strong>
+      Open Professional mode, work on a takeoff, then use Export → Project JSON (or Save to cloud later). Snapshots appear here automatically when you save from Pro.
+    </div>
+  </main>
+
+  <div class="drawer-overlay" id="drawerOverlay">
+    <div class="drawer" role="dialog" aria-label="Version history">
+      <div class="drawer-head">
+        <h3 id="drawerTitle">Version history</h3>
+        <button type="button" id="drawerClose" aria-label="Close">&times;</button>
+      </div>
+      <div class="drawer-body" id="drawerBody"></div>
+    </div>
+  </div>
+
+  <script src="js/mc-projects.js"></script>
+  <script>
+    (function () {
+      // Theme
+      try {
+        var t = localStorage.getItem('mc-theme') || localStorage.getItem('theme');
+        if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+      } catch (_) {}
+      document.getElementById('btnTheme').addEventListener('click', function () {
+        var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+        document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
+        try { localStorage.setItem('mc-theme', dark ? 'light' : 'dark'); } catch (_) {}
+      });
+
+      var grid = document.getElementById('grid');
+      var empty = document.getElementById('empty');
+      var search = document.getElementById('search');
+      var filterMode = document.getElementById('filterMode');
+      var drawerOverlay = document.getElementById('drawerOverlay');
+      var drawerBody = document.getElementById('drawerBody');
+      var drawerTitle = document.getElementById('drawerTitle');
+
+      function fmtDate(iso) {
+        if (!iso) return '—';
+        try {
+          return new Date(iso).toLocaleString(undefined, {
+            year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+          });
+        } catch (_) { return iso; }
+      }
+
+      function render() {
+        var q = (search.value || '').trim().toLowerCase();
+        var mode = filterMode.value;
+        var list = (window.MCProjects && MCProjects.list()) || [];
+        list = list.filter(function (p) {
+          if (mode && p.mode !== mode) return false;
+          if (!q) return true;
+          return (p.name || '').toLowerCase().indexOf(q) >= 0 ||
+            (p.client || '').toLowerCase().indexOf(q) >= 0;
+        });
+        grid.innerHTML = '';
+        if (!list.length) {
+          empty.style.display = 'block';
+          return;
+        }
+        empty.style.display = 'none';
+        list.forEach(function (p) {
+          var card = document.createElement('div');
+          card.className = 'project-card';
+          card.innerHTML =
+            '<div class="name"></div>' +
+            '<div class="badges"></div>' +
+            '<div class="meta"></div>' +
+            '<div class="actions">' +
+            '<button type="button" class="open">Open</button>' +
+            '<button type="button" class="versions">History</button>' +
+            '<button type="button" class="danger">Delete</button>' +
+            '</div>';
+          card.querySelector('.name').textContent = p.name || 'Untitled';
+          var badges = card.querySelector('.badges');
+          var b1 = document.createElement('span');
+          b1.className = 'badge ' + (p.mode === 'simple' ? 'simple' : 'pro');
+          b1.textContent = p.mode === 'simple' ? 'Simple' : 'Pro';
+          badges.appendChild(b1);
+          if (p.status) {
+            var b2 = document.createElement('span');
+            b2.className = 'badge';
+            b2.textContent = p.status;
+            badges.appendChild(b2);
+          }
+          card.querySelector('.meta').innerHTML =
+            (p.client ? 'Client: ' + escapeHtml(p.client) + '<br>' : '') +
+            (p.elementCount != null ? p.elementCount + ' elements · ' : '') +
+            (p.versionCount || 0) + ' version(s)<br>' +
+            'Updated ' + fmtDate(p.updatedAt);
+
+          card.querySelector('.open').addEventListener('click', function () {
+            MCProjects.setActiveId(p.id);
+            if (p.mode === 'simple') location.href = 'measurecraft_quantity_only.html?project=' + encodeURIComponent(p.id);
+            else location.href = 'takeoff_pro.html?project=' + encodeURIComponent(p.id);
+          });
+          card.querySelector('.versions').addEventListener('click', function () {
+            openHistory(p);
+          });
+          card.querySelector('.danger').addEventListener('click', function () {
+            if (!confirm('Delete project “‘ + (p.name || 'Untitled') + '” and all versions?')) return;
+            MCProjects.remove(p.id);
+            render();
+          });
+          grid.appendChild(card);
+        });
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      function openHistory(p) {
+        drawerTitle.textContent = (p.name || 'Project') + ' · History';
+        var versions = MCProjects.listVersions(p.id);
+        if (!versions.length) {
+          drawerBody.innerHTML = '<p style="color:var(--text2);font-size:13px;padding:12px;">No previous versions yet. Save again from Pro to create a snapshot.</p>';
+        } else {
+          drawerBody.innerHTML = versions.map(function (v) {
+            return '<div class="ver-item" data-vid="' + escapeHtml(v.id) + '">' +
+              '<div class="when">' + escapeHtml(fmtDate(v.savedAt)) + '</div>' +
+              '<div class="note">' + escapeHtml(v.note || 'Snapshot') + '</div>' +
+              '<button type="button" class="restore">Restore &amp; open</button>' +
+              '</div>';
+          }).join('');
+          drawerBody.querySelectorAll('.restore').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var item = btn.closest('.ver-item');
+              var vid = item && item.getAttribute('data-vid');
+              if (!vid) return;
+              if (!confirm('Restore this version? Current state will be saved as a new version first.')) return;
+              MCProjects.restoreVersion(p.id, vid);
+              MCProjects.setActiveId(p.id);
+              location.href = 'takeoff_pro.html?project=' + encodeURIComponent(p.id);
+            });
+          });
+        }
+        drawerOverlay.classList.add('open');
+      }
+
+      document.getElementById('drawerClose').addEventListener('click', function () {
+        drawerOverlay.classList.remove('open');
+      });
+      drawerOverlay.addEventListener('click', function (e) {
+        if (e.target === drawerOverlay) drawerOverlay.classList.remove('open');
+      });
+      search.addEventListener('input', render);
+      filterMode.addEventListener('change', render);
+      render();
+    })();
+  </script>
+</body>
+</html>
