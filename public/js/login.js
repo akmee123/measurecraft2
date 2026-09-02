@@ -11,7 +11,7 @@
             const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
             if (saved === 'dark' || (!saved && prefersDark)) {
                 root.setAttribute('data-theme', 'dark');
-                themeLabel.textContent = 'Light';
+                if (themeLabel) themeLabel.textContent = 'Light';
             }
 
             function applyThemeLabels(isDark) {
@@ -31,7 +31,7 @@
                     applyThemeLabels(true);
                 }
             }
-            themeToggle.addEventListener('click', toggleTheme);
+            if (themeToggle) themeToggle.addEventListener('click', toggleTheme);
             const themeToggleDesktop = document.getElementById('themeToggleDesktop');
             if (themeToggleDesktop) themeToggleDesktop.addEventListener('click', toggleTheme);
             applyThemeLabels(root.getAttribute('data-theme') === 'dark');
