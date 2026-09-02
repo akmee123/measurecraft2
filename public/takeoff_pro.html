@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
     <script src="research-client.js"></script>
     
-  <link rel="stylesheet" href="css/takeoff_pro.css">
+  <link rel="stylesheet" href="css/takeoff_pro.css?v=ui-fix-10">
 </head>
 <body>
 
@@ -28,6 +28,7 @@
         <span id="clientChip" class="chip">Client: —</span>
         <span id="dateChip" class="chip"></span>
         <div class="header-actions">
+            <a href="dashboard.html" title="Project dashboard">Projects</a>
             <a href="mode-select.html">Modes</a>
             <button id="btnOpenSimple" title="Save and continue in Simple Mode"><i class="fas fa-arrow-left"></i> Open Simple</button>
             <button id="btnProjectInfo"><i class="fas fa-info-circle"></i> Project</button>
@@ -93,6 +94,7 @@
         </div>
         <div class="group">
             <button id="btnAiDetect" data-tooltip="AI Detect"><i class="fas fa-robot"></i> AI</button>
+            <button id="btnQaScan" data-tooltip="QA / Error Detection — duplicates, gaps, outliers"><i class="fas fa-shield-alt"></i> QA</button>
             <button id="btnMaterials" data-tooltip="Materials"><i class="fas fa-cubes"></i></button>
             <button id="btnSettings" data-tooltip="Settings"><i class="fas fa-cog"></i></button>
             <button id="btnViewProps" data-tooltip="View properties & quantities"><i class="fas fa-sliders-h"></i> Properties</button>
@@ -117,6 +119,21 @@
         <div id="left-panel">
             <div class="panel-header"><span><i class="fas fa-layer-group" style="margin-right:6px;color:var(--accent);"></i> Elements</span><span id="elemCount" style="font-size:11px;color:var(--text-secondary);font-weight:600;background:var(--bg-tertiary);padding:2px 8px;border-radius:var(--radius-full);">0</span></div>
             <div class="elements-search"><i class="fas fa-search"></i><input id="elementSearch" type="search" placeholder="Search elements…" aria-label="Search elements" /></div>
+            <div id="review-filters" class="review-filters" title="Filter elements for faster review">
+                <button type="button" data-rfilter="all" class="active">All</button>
+                <button type="button" data-rfilter="unreviewed">Unreviewed</button>
+                <button type="button" data-rfilter="low_conf">Low conf</button>
+                <button type="button" data-rfilter="ai">AI only</button>
+                <select id="typeFilterSelect" aria-label="Filter by element type">
+                    <option value="">All types</option>
+                    <option value="wall">Walls</option>
+                    <option value="beam">Beams</option>
+                    <option value="column">Columns</option>
+                    <option value="slab">Slabs</option>
+                    <option value="cutout">Openings</option>
+                </select>
+                <button type="button" id="btnHeatmap" class="heatmap-toggle active" data-tooltip="Toggle confidence heatmap" title="Confidence heatmap">🔥</button>
+            </div>
             <div id="layer-tabs"></div>
             <div id="tree-container"></div>
         </div>
@@ -130,7 +147,7 @@
             <div id="threeContainer" class="three-container">
                 <div class="three-overlay">🔄 Drag to orbit · Scroll to zoom</div>
             </div>
-            <div class="overlay-label">🔒 PDF locked · 2D/3D toggle · scroll zoom (or lock zoom for trackpad) · middle/Space+drag pan · Ctrl+click cycle · arrows pan</div>
+            <div class="overlay-label" style="display:none;" aria-hidden="true"></div>
             <div class="measure-marker" id="measureMarker"></div>
             <div class="measure-label" id="measureLabel">0.00 m</div>
 
@@ -220,6 +237,18 @@
     <!-- Toast notifications -->
     <div id="mcToast" style="position:fixed;bottom:48px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--bg-elevated);color:var(--text-primary);border:1px solid var(--border-color);padding:10px 18px;border-radius:var(--radius-md);font-size:13px;font-weight:500;box-shadow:var(--shadow-lg);z-index:10000;opacity:0;pointer-events:none;transition:opacity 0.2s,transform 0.2s;max-width:420px;text-align:center;"></div>
 
+    <!-- Floating selection action bar -->
+    <div id="fabSelection" role="toolbar" aria-label="Selection actions">
+        <span class="fab-count" id="fabCount">0 selected</span>
+        <span class="fab-sep"></span>
+        <button type="button" id="fabAccept" class="fab-primary" title="Accept / mark reviewed (A)"><i class="fas fa-check"></i> Accept</button>
+        <button type="button" id="fabProps" title="Properties"><i class="fas fa-sliders-h"></i></button>
+        <button type="button" id="fabDuplicate" title="Duplicate"><i class="fas fa-copy"></i></button>
+        <button type="button" id="fabHide" title="Hide"><i class="fas fa-eye-slash"></i></button>
+        <span class="fab-sep"></span>
+        <button type="button" id="fabDelete" class="fab-danger" title="Delete (Del)"><i class="fas fa-trash-alt"></i></button>
+    </div>
+
     <!-- CONTEXT MENU -->
     <div class="context-menu" id="contextMenu">
         <div class="item" data-action="edit"><i class="fas fa-edit"></i> Edit</div>
@@ -248,6 +277,25 @@
             <div class="actions">
                 <button id="modalCancel">Cancel</button>
                 <button class="primary" id="modalSave">Save Overrides</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- QA / ERROR DETECTION MODAL -->
+    <div class="modal-overlay" id="qaModal">
+        <div class="modal qa-modal">
+            <h2><span><i class="fas fa-shield-alt" style="margin-right:8px;color:var(--accent);"></i>QA / Error Detection</span><span class="close-btn" id="qaModalClose">&times;</span></h2>
+            <div class="qa-summary" id="qaSummary"></div>
+            <div class="qa-filters" id="qaFilters">
+                <button type="button" data-qa-sev="all" class="active">All</button>
+                <button type="button" data-qa-sev="error">Errors</button>
+                <button type="button" data-qa-sev="warn">Warnings</button>
+                <button type="button" data-qa-sev="info">Info</button>
+            </div>
+            <div class="qa-list" id="qaList"></div>
+            <div class="actions">
+                <button type="button" id="qaRescan"><i class="fas fa-sync-alt"></i> Re-scan</button>
+                <button type="button" class="primary" id="qaModalDone">Done</button>
             </div>
         </div>
     </div>
@@ -486,6 +534,7 @@
         <div class="mc-ai-foot"><input type="text" id="mcAiInput" placeholder="Ask something…" autocomplete="off" /><button type="button" id="mcAiSend">Send</button></div>
     </div>
     
-  <script src="js/takeoff_pro.js?v=wall-engine-8"></script>
+  <script src="js/mc-projects.js"></script>
+  <script src="js/takeoff_pro.js?v=ui-fix-10"></script>
 </body>
 </html>
