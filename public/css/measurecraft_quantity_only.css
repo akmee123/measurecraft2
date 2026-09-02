@@ -21,13 +21,24 @@
       --danger-soft: #F5DCD8;
       --info: #2563eb;
       --info-soft: #DBEAFE;
-      --radius: 10px;
+      --radius: 12px;
       --radius-sm: 6px;
+      --radius-lg: 16px;
+      --radius-xl: 20px;
       --shadow: 0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
       --shadow-md: 0 8px 20px rgba(15,23,42,0.08);
-      --font: 'DM Sans', system-ui, sans-serif;
+      --shadow-lg: 0 12px 28px rgba(15,23,42,0.1);
+      --font: 'Work Sans', 'DM Sans', system-ui, sans-serif;
       --font-display: 'Fraunces', serif;
       --font-mono: 'Space Mono', ui-monospace, monospace;
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --fs-xs: 10px;
+      --fs-sm: 11px;
+      --fs-base: 13px;
+      --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
     }
     [data-theme="dark"] {
       --bg: #16140F;
@@ -61,8 +72,11 @@
       font-family: var(--font);
       background: var(--bg);
       color: var(--text);
-      line-height: 1.5;
+      font-size: var(--fs-base);
+      line-height: 1.45;
+      letter-spacing: -0.005em;
       -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
       display: flex;
       flex-direction: column;
       min-height: 100%;
@@ -93,7 +107,7 @@
       transition: all 0.15s;
     }
     .header-actions a:hover, .header-actions button:hover { color: var(--text); border-color: var(--brass); }
-    /* Open Pro â€” distinct teal call-to-action */
+    /* Open Pro Ã¢â‚¬â€ distinct teal call-to-action */
     .header-actions #btn-open-pro {
       background: var(--teal);
       border-color: var(--teal);
@@ -115,7 +129,7 @@
       border-color: #5fb5a6;
       color: #0a1a17;
     }
-    /* Theme toggle â€” icon only (sun / moon) */
+    /* Theme toggle Ã¢â‚¬â€ icon only (sun / moon) */
     .header-actions #btn-theme {
       width: 34px;
       height: 34px;
@@ -133,7 +147,7 @@
     [data-theme="dark"] .header-actions #btn-theme .icon-sun { display: block; }
     [data-theme="dark"] .header-actions #btn-theme .icon-moon { display: none; }
 
-    /* Horizontal top stepper â€” full width */
+    /* Horizontal top stepper Ã¢â‚¬â€ full width */
     .stepper-bar {
       background: var(--bg-card);
       border-bottom: 1px solid var(--border);
@@ -157,10 +171,10 @@
       align-items: center;
       text-align: center;
       gap: 6px;
-      padding: 6px 8px;
-      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      border-radius: var(--radius);
       cursor: pointer;
-      transition: background 0.15s;
+      transition: background 0.15s var(--ease-out), transform 0.15s ease;
       position: relative;
       flex: 1;
       min-width: 0;
@@ -250,29 +264,34 @@
       overflow: hidden;
     }
 
-    /* Cards & form */
+    /* Cards & form â€” aligned with Pro visual system */
     .card {
-      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
-      padding: 16px; margin-bottom: 14px; box-shadow: var(--shadow);
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+      padding: 16px 18px; margin-bottom: 14px; box-shadow: var(--shadow);
+      transition: box-shadow 0.2s var(--ease-out), border-color 0.15s ease;
     }
+    .card:hover { box-shadow: var(--shadow-md); }
     .card h3 {
-      font-size: 14px; font-weight: 600; margin-bottom: 6px;
+      font-size: 14px; font-weight: 650; margin-bottom: 6px;
       display: flex; align-items: center; gap: 8px;
-      letter-spacing: -0.01em; color: var(--text);
+      letter-spacing: -0.02em; color: var(--text);
     }
     .card .hint {
       font-size: 12.5px; color: var(--text-2); line-height: 1.5; margin-bottom: 12px;
     }
     .form-label {
-      display: block; font-size: 11px; font-weight: 600; color: var(--text-2);
-      text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 5px;
+      display: block; font-size: 10px; font-weight: 650; color: var(--text-2);
+      text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
     }
     .form-input, .form-select {
       width: 100%; background: var(--bg); border: 1px solid var(--border);
-      border-radius: var(--radius-sm); padding: 9px 11px; font-size: 13px;
-      color: var(--text); outline: none; transition: border 0.15s;
+      border-radius: 8px; padding: 9px 12px; font-size: 13px; height: 36px;
+      color: var(--text); outline: none; transition: border 0.15s, box-shadow 0.15s;
     }
-    .form-input:focus, .form-select:focus { border-color: var(--brass); }
+    .form-input:focus, .form-select:focus {
+      border-color: var(--brass);
+      box-shadow: 0 0 0 3px var(--brass-soft);
+    }
     .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
     .form-group { margin-bottom: 10px; }
 
@@ -492,12 +511,12 @@
       font-size:11px; font-weight:700; letter-spacing:.07em; text-transform:uppercase;
       margin-bottom:8px;
     }
-    .ai-guidance-kicker::before { content:'âœ¦'; font-size:13px; }
+    .ai-guidance-kicker::before { content:'Ã¢Å“Â¦'; font-size:13px; }
     .ai-guidance-sub {
       margin:6px 0 0; color:var(--text-2); font-size:13px; line-height:1.55;
       font-weight:400;
     }
-    /* Stack steps vertically â€” left panel is only ~280â€“320px wide */
+    /* Stack steps vertically Ã¢â‚¬â€ left panel is only ~280Ã¢â‚¬â€œ320px wide */
     .ai-how {
       background:linear-gradient(135deg, var(--teal-soft), rgba(255,255,255,.18));
       border:1px solid color-mix(in srgb, var(--teal) 18%, transparent);
@@ -528,13 +547,13 @@
     .ai-optional {
       color:var(--text-3); font-size:11px; font-weight:500;
     }
-    /* Legend notes box â€” full width of panel */
+    /* Legend notes box Ã¢â‚¬â€ full width of panel */
     .ai-legend-textarea {
       width:100%; min-height:80px; max-height:160px; resize:vertical;
       line-height:1.5; font-size:12.5px; padding:9px 11px;
       font-family: inherit; box-sizing: border-box;
     }
-    /* Upload zone â€” vertical stack so text flows horizontally */
+    /* Upload zone Ã¢â‚¬â€ vertical stack so text flows horizontally */
     .ai-legend-upload {
       margin-top:12px; border:1.5px dashed color-mix(in srgb, var(--teal) 45%, var(--border));
       border-radius:12px; padding:14px;
